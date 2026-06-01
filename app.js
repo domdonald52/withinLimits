@@ -149,7 +149,7 @@ const App = (function(){
     perf_method: 'pchart',
   };
   let recentRunways = [];
-  const APP_VERSION = 'wb-v93';
+  const APP_VERSION = 'wb-v94';
   let runways = [];
   let selectedToRunwayId = null;
   let selectedLdRunwayId = null;
@@ -587,8 +587,10 @@ const App = (function(){
     const fc = fuelInput[ac.id] = fuelInput[ac.id] || {};
     if (fc.fuel === undefined) fc.fuel = 0; // reset = empty input, pilot enters explicitly
     if (fc.duration === undefined) fc.duration = 1.0;
+    console.log('[debug] renderFuelControls running, mode=' + mode + ', perfInput.op_time=' + perfInput.op_time + ', host found=' + !!host);
 
     if (mode === 'forward'){
+      console.log('[debug] entering forward branch, isNight=' + (perfInput.op_time === 'night'));
       titleEl.textContent = 'Fuel & flight';
       const isNight = perfInput.op_time === 'night';
       const reserveMin = isNight ? 45 : (ac.reserve_minutes || 30);
@@ -3415,6 +3417,7 @@ const App = (function(){
     _flashChangedWbFields();
   }
   function setMode(m){
+    console.log('[debug] setMode called with:', m, '(previous mode was:', mode + ')');
     mode = m;
     document.querySelectorAll('.tab-bar button').forEach(b => b.classList.toggle('active', b.dataset.mode === m));
     const isPerf = (m === 'performance');
