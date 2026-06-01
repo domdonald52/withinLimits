@@ -149,7 +149,7 @@ const App = (function(){
     perf_method: 'pchart',
   };
   let recentRunways = [];
-  const APP_VERSION = 'wb-v97';
+  const APP_VERSION = 'wb-v98';
   let runways = [];
   let selectedToRunwayId = null;
   let selectedLdRunwayId = null;
@@ -1692,8 +1692,10 @@ const App = (function(){
 
     let to_result = null, ld_result = null;
     let methodNote = '';
+    // Op card is always visible — Time of day affects W&B reserve (45 min night vs 30 day) regardless of method.
+    // The Type field is P-chart-only, indicated inline on its label.
     const opCard = document.getElementById('perf-op-card');
-    if (opCard) opCard.classList.toggle('hidden', activeMethod !== 'pchart');
+    if (opCard) opCard.classList.remove('hidden');
 
     if (activeMethod === 'pchart'){
       methodNote = '';
