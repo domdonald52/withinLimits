@@ -149,7 +149,7 @@ const App = (function(){
     perf_method: 'pchart',
   };
   let recentRunways = [];
-  const APP_VERSION = 'wb-v94';
+  const APP_VERSION = 'wb-v95';
   let runways = [];
   let selectedToRunwayId = null;
   let selectedLdRunwayId = null;
@@ -587,10 +587,8 @@ const App = (function(){
     const fc = fuelInput[ac.id] = fuelInput[ac.id] || {};
     if (fc.fuel === undefined) fc.fuel = 0; // reset = empty input, pilot enters explicitly
     if (fc.duration === undefined) fc.duration = 1.0;
-    console.log('[debug] renderFuelControls running, mode=' + mode + ', perfInput.op_time=' + perfInput.op_time + ', host found=' + !!host);
 
     if (mode === 'forward'){
-      console.log('[debug] entering forward branch, isNight=' + (perfInput.op_time === 'night'));
       titleEl.textContent = 'Fuel & flight';
       const isNight = perfInput.op_time === 'night';
       const reserveMin = isNight ? 45 : (ac.reserve_minutes || 30);
@@ -3417,25 +3415,26 @@ const App = (function(){
     _flashChangedWbFields();
   }
   function setMode(m){
-    console.log('[debug] setMode called with:', m, '(previous mode was:', mode + ')');
     mode = m;
     document.querySelectorAll('.tab-bar button').forEach(b => b.classList.toggle('active', b.dataset.mode === m));
     const isPerf = (m === 'performance');
-    // W&B cards visible in non-perf modes
-    document.getElementById('stations-card').classList.toggle('hidden', isPerf);
-    document.getElementById('fuel-card').classList.toggle('hidden', isPerf);
-    document.getElementById('results-card').classList.toggle('hidden', isPerf);
-    document.getElementById('envelope-card').classList.toggle('hidden', isPerf);
-    document.getElementById('breakdown-card').classList.toggle('hidden', isPerf);
-    document.getElementById('banner-host').classList.toggle('hidden', isPerf);
-    // Perf cards visible only in perf mode
-    document.getElementById('perf-cards').classList.toggle('hidden', !isPerf);
-    // Scenario bar hidden in perf mode (scenarios only apply to W&B)
-    document.querySelector('.scenario-bar').classList.toggle('hidden', isPerf);
+    // Helper: toggle .hidden on an element if it exists. Some elements (e.g. .scenario-bar)
+    // may have been removed from the HTML but still be referenced here.
+    const toggle = (sel, byId, hidden) => {
+      const el = byId ? document.getElementById(sel) : document.querySelector(sel);
+      if (el) el.classList.toggle('hidden', hidden);
+    };
+    toggle('stations-card', true, isPerf);
+    toggle('fuel-card', true, isPerf);
+    toggle('results-card', true, isPerf);
+    toggle('envelope-card', true, isPerf);
+    toggle('breakdown-card', true, isPerf);
+    toggle('banner-host', true, isPerf);
+    toggle('perf-cards', true, !isPerf);
+    toggle('.scenario-bar', false, isPerf);
     if (isPerf){
       renderPerformance();
     } else {
-      // Force a full re-render of the fuel card so it picks up any Perf-tab changes (like op_time → night reserve)
       renderFuelControls();
       renderResults();
     }
