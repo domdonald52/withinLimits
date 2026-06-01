@@ -149,7 +149,7 @@ const App = (function(){
     perf_method: 'pchart',
   };
   let recentRunways = [];
-  const APP_VERSION = 'wb-v98';
+  const APP_VERSION = 'wb-v99';
   let runways = [];
   let selectedToRunwayId = null;
   let selectedLdRunwayId = null;
@@ -566,8 +566,7 @@ const App = (function(){
       div.className = 'station';
       div.innerHTML = `
         <div class="station-head">
-          <span class="station-name">${s.name}</span>
-          <span class="station-meta">arm ${fmtArm(s.arm, ac)}${s.max ? ' · max ' + fmt(s.max) + ' ' + u(ac).w : ''}</span>
+          <span class="station-name">${s.name}<span class="station-meta"> (arm ${fmtArm(s.arm, ac)}${s.max ? ' \u00b7 max ' + fmt(s.max) + ' ' + u(ac).w : ''})</span></span>
         </div>
         <input type="number" inputmode="decimal" value="${sv[idx]}" min="0" max="${s.max ? s.max * 1.5 : 999}" step="${ac.units === 'metric' ? 1 : 1}" data-idx="${idx}">
       `;
