@@ -143,13 +143,35 @@ window.Performance = (function(){
       }
       d *= weight_mult;
     }
-    const slope_pct_per_pct = data.slope_factor_pct_per_pct_takeoff ?? data.slope_factor_pct_per_pct;
-    const slope_factor = 1 + (slope_pct * slope_pct_per_pct / 100);
+    // Slope correction — prefer 2D piecewise grid if present
+    let slope_factor, slope_oor = false, slope_oor_reason = null;
+    if (data.slope_factor_takeoff && data.slope_factor_takeoff.grid){
+      const sr = computeSlopeFactor(data.slope_factor_takeoff, slope_pct, d);
+      slope_factor = sr.factor;
+      slope_oor = sr.outOfRange;
+      slope_oor_reason = sr.reason;
+    } else {
+      const slope_pct_per_pct = data.slope_factor_pct_per_pct_takeoff ?? data.slope_factor_pct_per_pct;
+      slope_factor = 1 + (slope_pct * slope_pct_per_pct / 100);
+    }
     d *= slope_factor;
-    const wind_factor = computeWindFactor(data.wind_factor_takeoff || data.wind_factor, wind_component_kt);
+    const wind_factor = computeWindFactor(data.wind_factor_takeoff || data.wind_factor, wind_component_kt, d);
     d *= wind_factor.value;
     if (wet) d *= 1.15;
-    return { distance: d, d_ppd, op_mult, weight_mult, slope_factor, wind_factor: wind_factor.value, wind_out_of_range: wind_factor.outOfRange, wind_oor_reason: wind_factor.reason, wind_oor_direction: wind_factor.direction, wet_factor: wet ? 1.15 : 1.00 };
+    return {
+      distance: d,
+      d_ppd,
+      op_mult,
+      weight_mult,
+      slope_factor,
+      slope_out_of_range: slope_oor,
+      slope_oor_reason: slope_oor_reason,
+      wind_factor: wind_factor.value,
+      wind_out_of_range: wind_factor.outOfRange,
+      wind_oor_reason: wind_factor.reason,
+      wind_oor_direction: wind_factor.direction,
+      wet_factor: wet ? 1.15 : 1.00,
+    };
   }
 
   function pchartLandingDistance(data, elev_ft, operation, slope_pct, wind_component_kt, wet){
@@ -166,28 +188,137 @@ window.Performance = (function(){
     const mults_ld = data.operation_multipliers_ld || data.operation_multipliers || {};
     const op_mult = mults_ld[operation] || 1.0;
     let d = d_ppd * op_mult;
-    const slope_pct_per_pct = data.slope_factor_pct_per_pct_landing ?? data.slope_factor_pct_per_pct;
-    const slope_factor = 1 - (slope_pct * slope_pct_per_pct / 100);
+    // Slope correction — prefer 2D piecewise grid if present
+    let slope_factor, slope_oor = false, slope_oor_reason = null;
+    if (data.slope_factor_landing && data.slope_factor_landing.grid){
+      const sr = computeSlopeFactor(data.slope_factor_landing, slope_pct, d);
+      slope_factor = sr.factor;
+      slope_oor = sr.outOfRange;
+      slope_oor_reason = sr.reason;
+    } else {
+      const slope_pct_per_pct = data.slope_factor_pct_per_pct_landing ?? data.slope_factor_pct_per_pct;
+      slope_factor = 1 - (slope_pct * slope_pct_per_pct / 100);
+    }
     d *= slope_factor;
-    const wind_factor = computeWindFactor(data.wind_factor_landing || data.wind_factor, wind_component_kt);
+    const wind_factor = computeWindFactor(data.wind_factor_landing || data.wind_factor, wind_component_kt, d);
     d *= wind_factor.value;
     if (wet) d *= 1.15;
-    return { distance: d, d_ppd, op_mult, slope_factor, wind_factor: wind_factor.value, wind_out_of_range: wind_factor.outOfRange, wind_oor_reason: wind_factor.reason, wind_oor_direction: wind_factor.direction, wet_factor: wet ? 1.15 : 1.00 };
+    return {
+      distance: d,
+      d_ppd,
+      op_mult,
+      slope_factor,
+      slope_out_of_range: slope_oor,
+      slope_oor_reason: slope_oor_reason,
+      wind_factor: wind_factor.value,
+      wind_out_of_range: wind_factor.outOfRange,
+      wind_oor_reason: wind_factor.reason,
+      wind_oor_direction: wind_factor.direction,
+      wet_factor: wet ? 1.15 : 1.00,
+    };
   }
 
-  function computeWindFactor(wf, wind_kt){
+  // --- Piecewise wind factor (base-distance dependent) ---
+  // wf can be either:
+  //   (a) scalar form (legacy): { headwind_pct_per_kt: 0.025, tailwind_pct_per_kt: 0.04, max_headwind_kt: 20, max_tailwind_kt: 5 }
+  //   (b) base-dependent (preferred): { headwind_pct_per_kt_by_base: [{base_m, pct}, ...], tailwind_pct_per_kt_by_base: [...], max_*_kt }
+  // base_m is the distance *before* wind correction (after slope, ops, weight, wet, surf).
+  function _interpByBase(arr, base_m){
+    if (!Array.isArray(arr) || !arr.length) return null;
+    const pts = [...arr].sort((a,b) => a.base_m - b.base_m);
+    if (base_m <= pts[0].base_m) return pts[0].pct;
+    if (base_m >= pts[pts.length-1].base_m) return pts[pts.length-1].pct;
+    for (let i = 0; i < pts.length-1; i++){
+      if (base_m >= pts[i].base_m && base_m <= pts[i+1].base_m){
+        const f = (base_m - pts[i].base_m) / (pts[i+1].base_m - pts[i].base_m);
+        return pts[i].pct + (pts[i+1].pct - pts[i].pct) * f;
+      }
+    }
+    return pts[0].pct;
+  }
+
+  function computeWindFactor(wf, wind_kt, base_m){
     if (!wf) wf = { headwind_pct_per_kt: 0.015, tailwind_pct_per_kt: 0.06, max_headwind_kt: 20, max_tailwind_kt: 5 };
     let factor, outOfRange = false, reason = null, direction = null;
     if (wind_kt >= 0){
       const capped = Math.min(wind_kt, wf.max_headwind_kt);
       if (wind_kt > wf.max_headwind_kt){ outOfRange = true; reason = `Headwind ${wind_kt.toFixed(0)} kt exceeds chart limit ${wf.max_headwind_kt} kt`; direction = 'headwind'; }
-      factor = 1 - wf.headwind_pct_per_kt * capped;
+      // Prefer piecewise table if present; else scalar
+      let pct;
+      if (Array.isArray(wf.headwind_pct_per_kt_by_base) && wf.headwind_pct_per_kt_by_base.length){
+        pct = _interpByBase(wf.headwind_pct_per_kt_by_base, base_m || 0);
+      } else {
+        pct = wf.headwind_pct_per_kt;
+      }
+      factor = 1 - pct * capped;
     } else {
       const tail = Math.min(-wind_kt, wf.max_tailwind_kt);
       if (-wind_kt > wf.max_tailwind_kt){ outOfRange = true; reason = `Tailwind ${(-wind_kt).toFixed(0)} kt exceeds chart limit ${wf.max_tailwind_kt} kt`; direction = 'tailwind'; }
-      factor = 1 + wf.tailwind_pct_per_kt * tail;
+      let pct;
+      if (Array.isArray(wf.tailwind_pct_per_kt_by_base) && wf.tailwind_pct_per_kt_by_base.length){
+        pct = _interpByBase(wf.tailwind_pct_per_kt_by_base, base_m || 0);
+      } else {
+        pct = wf.tailwind_pct_per_kt;
+      }
+      factor = 1 + pct * tail;
     }
     return { value: factor, outOfRange, reason, direction };
+  }
+
+  // --- Piecewise slope factor (2D: base × slope%) ---
+  // sf can be either:
+  //   (a) scalar form (legacy): { pct_per_pct: 5 }  // 5%-distance per 1% slope, linear
+  //   (b) 2D piecewise: { grid: [{ base_m: 400, by_slope: [{slope_pct: -2, factor: 0.91}, ...] }, ...] }
+  function _interpSlopeGrid(grid, base_m, slope_pct){
+    if (!Array.isArray(grid) || !grid.length) return null;
+    const bases = [...grid].sort((a,b) => a.base_m - b.base_m);
+    // Bracket by base
+    let blo, bhi, fb;
+    if (base_m <= bases[0].base_m){ blo = bhi = bases[0]; fb = 0; }
+    else if (base_m >= bases[bases.length-1].base_m){ blo = bhi = bases[bases.length-1]; fb = 0; }
+    else {
+      for (let i = 0; i < bases.length-1; i++){
+        if (base_m >= bases[i].base_m && base_m <= bases[i+1].base_m){
+          blo = bases[i]; bhi = bases[i+1];
+          fb = (base_m - blo.base_m) / (bhi.base_m - blo.base_m);
+          break;
+        }
+      }
+    }
+    // Interpolate slope within each bracket; if requested slope is outside this base's data, return null (OOR)
+    const interpSlope = (row, sp) => {
+      const pts = [...row.by_slope].sort((a,b) => a.slope_pct - b.slope_pct);
+      if (sp < pts[0].slope_pct) return null;  // OOR
+      if (sp > pts[pts.length-1].slope_pct) return null;
+      if (sp === pts[0].slope_pct) return pts[0].factor;
+      if (sp === pts[pts.length-1].slope_pct) return pts[pts.length-1].factor;
+      for (let i = 0; i < pts.length-1; i++){
+        if (sp >= pts[i].slope_pct && sp <= pts[i+1].slope_pct){
+          const f = (sp - pts[i].slope_pct) / (pts[i+1].slope_pct - pts[i].slope_pct);
+          return pts[i].factor + (pts[i+1].factor - pts[i].factor) * f;
+        }
+      }
+      return null;
+    };
+    const flo = interpSlope(blo, slope_pct);
+    const fhi = (blo === bhi) ? flo : interpSlope(bhi, slope_pct);
+    if (flo == null || fhi == null) return null;
+    return flo + (fhi - flo) * fb;
+  }
+
+  function computeSlopeFactor(sf, slope_pct, base_m){
+    // sf is the slope correction object. Returns { factor, outOfRange, reason }.
+    if (!sf) return { factor: 1.0, outOfRange: false, reason: null };
+    if (Array.isArray(sf.grid) && sf.grid.length){
+      const f = _interpSlopeGrid(sf.grid, base_m || 0, slope_pct);
+      if (f == null){
+        return { factor: 1.0, outOfRange: true, reason: `Slope ${slope_pct.toFixed(2)}% at base ${(base_m||0).toFixed(0)} m is outside chart range` };
+      }
+      return { factor: f, outOfRange: false, reason: null };
+    }
+    // Legacy scalar
+    const pct_per_pct = sf.pct_per_pct || 0;
+    return { factor: 1 + (slope_pct * pct_per_pct / 100), outOfRange: false, reason: null };
   }
 
   // Bilinear interpolation/extrapolation over a PA × OAT grid.

@@ -149,7 +149,7 @@ const App = (function(){
     perf_method: 'pchart',
   };
   let recentRunways = [];
-  const APP_VERSION = 'wb-v95';
+  const APP_VERSION = 'wb-v97';
   let runways = [];
   let selectedToRunwayId = null;
   let selectedLdRunwayId = null;
@@ -599,7 +599,7 @@ const App = (function(){
           <div>
             <label>Usable fuel on board (${u(ac).vol})</label>
             <div style="display:flex;gap:6px;align-items:stretch">
-              <input type="number" inputmode="decimal" id="in-fuel" value="${fc.fuel}" min="0" max="${ac.usable_fuel}" step="0.5" style="flex:1">
+              <input type="number" inputmode="decimal" id="in-fuel" value="${(Math.round(fc.fuel * 100) / 100)}" min="0" max="${ac.usable_fuel}" step="0.5" style="flex:1">
               <button class="btn secondary" id="in-fuel-max" type="button" style="width:auto;padding:0 12px;font-size:12px;white-space:nowrap" title="Calculate and fill the maximum possible usable fuel given station weights, MTOW, tank capacity and CG">Max possible</button>
             </div>
           </div>
@@ -644,12 +644,12 @@ const App = (function(){
           } else { el.innerHTML = ''; }
         } else { el.innerHTML = ''; }
       };
-      host.querySelector('#in-fuel').addEventListener('input', e => { fc.fuel = parseFloat(e.target.value) || 0; refreshInfo(); update(); });
+      host.querySelector('#in-fuel').addEventListener('input', e => { fc.fuel = Math.round((parseFloat(e.target.value) || 0) * 100) / 100; refreshInfo(); update(); });
       host.querySelector('#in-fuel-max').addEventListener('click', () => {
         const r = calcReverse(ac);
-        fc.fuel = r.bestFuel;
+        fc.fuel = Math.round(r.bestFuel * 100) / 100;
         const fuelEl = document.getElementById('in-fuel');
-        fuelEl.value = fmt(r.bestFuel, 1);
+        fuelEl.value = fmt(fc.fuel, 2);
         const origBorder = fuelEl.style.border;
         const origBg = fuelEl.style.background;
         fuelEl.style.border = '2px solid #16a34a';
@@ -1776,9 +1776,20 @@ const App = (function(){
       const ldEnvIssuesEarly = P.envelopeStatus(env, paLd, oatLd, rLd.elev);
       if (toEnvIssuesEarly.length){ to_result.wind_out_of_range = true; to_result.wind_oor_reason = `T/O outside chart range: ${toEnvIssuesEarly.join('; ')}`; }
       if (ldEnvIssuesEarly.length){ ld_result.wind_out_of_range = true; ld_result.wind_oor_reason = `LDG outside chart range: ${ldEnvIssuesEarly.join('; ')}`; }
+      // Slope OOR (e.g. +3% slope at base 1000 m off-chart) — surface via same OOR mechanism. NO-GO.
+      if (to_result.slope_out_of_range){
+        to_result.wind_out_of_range = true;
+        to_result.wind_oor_reason = (to_result.wind_oor_reason ? to_result.wind_oor_reason + '; ' : '') + to_result.slope_oor_reason;
+        to_result.wind_oor_direction = null; // slope OOR is unconditional blocking
+      }
+      if (ld_result.slope_out_of_range){
+        ld_result.wind_out_of_range = true;
+        ld_result.wind_oor_reason = (ld_result.wind_oor_reason ? ld_result.wind_oor_reason + '; ' : '') + ld_result.slope_oor_reason;
+        ld_result.wind_oor_direction = null;
+      }
       // Headwind OOR is conservative (chart underestimates the benefit), so the floor distance
       // is a safe upper bound — still GO if it fits TORA. Tailwind OOR underestimates the
-      // penalty, so NO-GO. Envelope OOR (PA/elev/OAT) leaves direction null and is NO-GO too.
+      // penalty, so NO-GO. Envelope OOR (PA/elev/OAT) and slope OOR leave direction null and are NO-GO too.
       const toOorBlocks = !!to_result.wind_out_of_range && to_result.wind_oor_direction !== 'headwind';
       const ldOorBlocks = !!ld_result.wind_out_of_range && ld_result.wind_oor_direction !== 'headwind';
       const toOK = rTo.tora > 0 && to_result.distance <= rTo.tora && !toOorBlocks;

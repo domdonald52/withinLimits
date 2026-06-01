@@ -105,20 +105,11 @@ window.PCHART_DATA['C152'] = {
     "all_ops_paved_night": 1.3514,
     "all_ops_grass_night": 1.6486
 },
-  slope_factor_pct_per_pct_takeoff: 5,
-  slope_factor_pct_per_pct_landing: 6,
-  wind_factor_takeoff: {
-    headwind_pct_per_kt: 0.025,
-    tailwind_pct_per_kt: 0.037,
-    max_headwind_kt: 20,
-    max_tailwind_kt: 5,
-  },
-  wind_factor_landing: {
-    headwind_pct_per_kt: 0.025,
-    tailwind_pct_per_kt: 0.040,
-    max_headwind_kt: 20,
-    max_tailwind_kt: 5,
-  },
+  // Wind and slope corrections — uses shared NZ P-chart nomographs (see perf-nz-corrections.js)
+  slope_factor_takeoff: (window.NZ_PCHART_CORRECTIONS && window.NZ_PCHART_CORRECTIONS.slope.takeoff),
+  slope_factor_landing: (window.NZ_PCHART_CORRECTIONS && window.NZ_PCHART_CORRECTIONS.slope.landing),
+  wind_factor_takeoff: (window.NZ_PCHART_CORRECTIONS && window.NZ_PCHART_CORRECTIONS.wind.takeoff),
+  wind_factor_landing: (window.NZ_PCHART_CORRECTIONS && window.NZ_PCHART_CORRECTIONS.wind.landing),
 };
 
 // Tabular FM data (POH table values, bilinear interpolation)

@@ -1,224 +1,145 @@
-# Within Limits — Performance Data Validation
+# Performance engine validation
 
-This document records validation of the app's performance calculations against
-the source data (Flight Manual tables, P-charts). It is the audit trail for the
-CASO-4 / AC91-3 / FM-data implementation.
+## Overview
 
-The app has two performance methods, each validated separately:
+This document records validation traces against the NZ CAA P-charts for the three
+aircraft currently supported in the app (PA-38, C172N, C152). The goal is
+*faithful reproduction* of the P-charts including their known non-linearities
+in the wind and slope correction nomographs.
 
-- **FM mode** — uses tabular FM data (`takeoff_table` / `landing_table`) when
-  present, with AC91-3 factors (surface, slope, wind, wet) applied on top.
-  Falls back to a linear-coefficient model for aircraft without tabular FM.
-- **P-chart mode** — uses `reference_points` grid + operation multipliers +
-  weight/wind/slope corrections, with chart-baked factors (not AC91-3).
+## Engine model (v96+)
 
----
+- **Wind**: piecewise `pct_per_kt` table keyed by base distance (post-slope). Linear
+  interpolation between sample points. Separate tables for takeoff/landing and
+  HW/TW. Stored in shared file `perf-nz-corrections.js`.
+- **Slope**: 2D piecewise grid (base distance × slope %). Bilinear interpolation
+  between sample points. Separate grids for takeoff/landing.
 
-## FM mode validation
+All three aircraft (PA-38, C172N, C152) share the same wind and slope nomographs
+on their P-charts, verified by tracing all three at multiple base × correction
+combinations and confirming agreement within reading uncertainty (~5-10 m).
 
-Method: for each entry in `takeoff_table` / `landing_table`, run the engine
-with the same inputs (PA, OAT, paved, dry, zero wind, zero slope, MTOW),
-compare app output vs the table value.
+## Wind traces (shared across all 3 aircraft)
 
-| Aircraft | T/O cells | T/O max diff | LD cells | LD max diff | Status |
-|---|---|---|---|---|---|
-| **PA-38**  | n/a (linear coefficient only)         | n/a    | n/a    | n/a    | n/a |
-| **C172N**  | 45 (9 PA × 5 OAT) | 0.0 m  | 45     | 0.0 m  | ✓ PASS |
-| **C152**   | 45 (9 PA × 5 OAT) | 0.0 m  | 45     | 0.0 m  | ✓ PASS |
+### Takeoff HW @ 10 kt
 
-Engine reproduces FM grid points exactly via bilinear interpolation. The
-AC91-3 layer applied on top (surface, slope, wind, wet) uses the published
-constants — these have not been independently re-validated here.
+| Base | Result | Δ | %/kt |
+|------|-------:|----:|-----:|
+| 400  | 350    | -50 | 1.25 |
+| 500  | 440    | -60 | 1.20 |
+| 600  | 520    | -80 | 1.33 |
+| 700  | 615    | -85 | 1.21 |
+| 800  | 705    | -95 | 1.19 |
+| 900  | 795    | -105| 1.17 |
+| 1000 | 880    | -120| 1.20 |
+| 1100 | 980    | -120| 1.09 |
+| 1200 | 1075   | -125| 1.04 |
 
----
+### Takeoff TW @ 5 kt
 
-## P-chart validation walkthrough (Wellington Aero Club fleet)
+| Base | Result | Δ | %/kt |
+|------|-------:|---:|-----:|
+| 300  | 360    | +60| 4.00 |
+| 400  | 480    | +80| 4.00 |
+| 500  | 595    | +95| 3.80 |
+| 600  | 715    |+115| 3.83 |
+| 700  | 825    |+125| 3.57 |
+| 800  | 925    |+125| 3.12 |
+| 900  | 1050   |+150| 3.33 |
+| 1000 | 1140   |+140| 2.80 |
 
-### Method
+### Landing HW @ 10 kt
 
-1. Open each chart in the **P-Chart Tracer**
-2. De-skew (4-click rotation correction)
-3. Calibrate the right-side distance scale (≥2 ticks)
-4. Trace one full path through the chart per test case
-5. Read the exit distance off the calibrated Y axis
-6. Compare against the app's computed value
+| Base | Result | Δ | %/kt |
+|------|-------:|---:|-----:|
+| 300  | 255    | -45| 1.50 |
+| 400  | 340    | -60| 1.50 |
+| 500  | 430    | -70| 1.40 |
+| 600  | 525    | -75| 1.25 |
+| 700  | 620    | -80| 1.14 |
+| 800  | 723    | -77| 0.96 |
+| 900  | 815    | -85| 0.94 |
+| 1000 | 908    | -92| 0.92 |
 
-Tolerance: ±5% (chart reading + tracer precision)
+### Landing TW @ 5 kt
 
-### Results table (post-fix)
+| Base | Result | Δ | %/kt |
+|------|-------:|---:|-----:|
+| 300  | 360    | +60| 4.00 |
+| 400  | 483    | +83| 4.15 |
+| 500  | 602    |+102| 4.08 |
+| 600  | 708    |+108| 3.60 |
+| 700  | 807    |+107| 3.06 |
+| 800  | 912    |+112| 2.80 |
+| 900  | 1010   |+110| 2.44 |
+| 1000 | 1105   |+105| 2.10 |
 
-All values in metres. Diff = (engine − traced)/traced × 100%.
+## Slope traces (shared across all 3 aircraft)
 
-#### PA-38 Tomahawk (Air 2054, 14/3/1990)
+### Takeoff slope grid (factor = result/base)
 
-| Test                          | Traced | Engine | Diff   |
-|-------------------------------|--------|--------|--------|
-| **Takeoff** | | | |
-| Step 1: SL/15C PPD            |   440  |   440  |  0.0%  |
-| Step 1: 2000ft/15C PPD        |   610  |   610  |  0.0%  |
-| Step 1: 3000ft/15C PPD        |   690  |   685  | −0.7%  |
-| Step 2: PPD baseline (SL/15C) |   440  |   440  |  0.0%  |
-| Step 2: AT-PD                 |   515  |   515  |  0.0%  |
-| Step 2: P-GD                  |   480  |   480  |  0.0%  |
-| Step 2: AT-GD                 |   560  |   560  |  0.0%  |
-| Step 2: AO-PN                 |   580  |   580  |  0.0%  |
-| Step 2: AO-GN                 |   650  |   650  |  0.0%  |
-| Step 3: HW 10kt ratio (avg of 4 base) | 0.750 | 0.750 | 0.0% |
-| Step 3: TW 5kt ratio (avg of 4 base)  | 1.18  | 1.185 | +0.4% |
-| Step 4: +2% slope             |   485  |   484  | −0.2%  |
-| **Landing** | | | |
-| L1: SL                        |   495  |   490  | −1.0%  |
-| L1: 2000ft                    |   510  |   510  |  0.0%  |
-| L1: 4000ft                    |   520  |   520  |  0.0%  |
-| L2: AT-PD                     |   580  |   584  | +0.7%  |
-| L2: P-GD                      |   620  |   622  | +0.3%  |
-| L2: AO-PN                     |   650  |   660  | +1.5%  |
-| L2: AT-GD                     |   740  |   735  | −0.7%  |
-| L2: AO-GN                     |   840  |   832  | −1.0%  |
-| L3: HW 10kt ratio (avg)       | 0.75   | 0.75   |  0.0%  |
-| L3: TW 5kt ratio (avg)        | 1.20   | 1.20   |  0.0%  |
-| L4: +2% upslope               |   430  |   431  | +0.3%  |
+| Base | -2%   | -1%   | 0%    | +1%   | +2%   | +3%   |
+|------|------:|------:|------:|------:|------:|------:|
+| 400  | 0.9125| 0.9500| 1.0000| 1.0500| 1.1125| 1.2000|
+| 700  | 0.8571| 0.9286| 1.0000| 1.0857| 1.1857| 1.3143|
+| 1000 | 0.8400| 0.9000| 1.0000| 1.1200| 1.2600| OOR   |
 
-#### Cessna C172N (Air 2083, 20/3/1990)
+### Landing slope grid
 
-| Test                          | Traced | Engine | Diff   |
-|-------------------------------|--------|--------|--------|
-| **Takeoff** | | | |
-| Step 1: SL/15C PPD            |   475  |   475  |  0.0%  |
-| Step 1: 2000ft/15C PPD        |   580  |   580  |  0.0%  |
-| Step 1: 3000ft/15C PPD        |   640  |   635  | −0.8%  |
-| Step 2: P-GD                  |   526  |   526  | −0.1%  |
-| Step 2: AT-PD                 |   556  |   556  |  0.0%  |
-| Step 2: AT-GD                 |   617  |   617  | −0.1%  |
-| Step 2: AO-PN                 |   637  |   637  |  0.0%  |
-| Step 2: AO-GN                 |   697  |   697  |  0.0%  |
-| Step 3: HW 10kt ratio (avg)   | 0.753  | 0.750  | −0.4%  |
-| Step 3: TW 5kt ratio (avg)    | 1.187  | 1.185  | −0.2%  |
-| Step 4: +2% slope             |   525  |   523  | −0.5%  |
-| Step 5: 953kg                 |   380  |   380  |  0.0%  |
-| Step 5: 862kg                 |   295  |   295  |  0.0%  |
-| **Landing** | | | |
-| L1: SL                        |   380  |   380  |  0.0%  |
-| L1: 2000ft                    |   400  |   400  |  0.0%  |
-| L1: 4000ft                    |   420  |   420  |  0.0%  |
-| L2: AT-PD                     |   440  |   445  | +1.1%  |
-| L2: P-GD                      |   485  |   500  | +3.0%  |
-| L2: AO-PN                     |   500  |   510  | +2.0%  |
-| L2: AT-GD                     |   550  |   560  | +1.8%  |
-| L2: AO-GN                     |   625  |   620  | −0.8%  |
-| L3: HW 10kt ratio (avg)       | 0.760  | 0.750  | −1.3%  |
-| L3: TW 5kt ratio (avg)        | 1.187  | 1.20   | +1.1%  |
-| L4: +2% upslope               |   335  |   334  | −0.2%  |
+| Base | -2%   | -1%   | 0%    | +1%   | +2%   | +3%   |
+|------|------:|------:|------:|------:|------:|------:|
+| 400  | 1.1500| 1.0625| 1.0000| 0.9375| 0.8750| 0.8250|
+| 700  | 1.2429| 1.1143| 1.0000| 0.9071| 0.8286| 0.7571|
+| 1000 | OOR   | 1.1600| 1.0000| 0.8800| 0.7900| 0.7300|
 
-#### Cessna C152 (Air 2032+, 18/12/1984)
+## Spot checks confirming shared nomograph
 
-| Test                          | Traced | Engine | Diff   |
-|-------------------------------|--------|--------|--------|
-| **Takeoff** | | | |
-| Step 1: SL/15C PPD            |   400  |   400  |  0.0%  |
-| Step 1: 2000ft/15C PPD        |   513  |   513  | −0.1%  |
-| Step 1: 3000ft/15C PPD        |   565  |   565  |  0.0%  |
-| Step 2: P-GD                  |   440  |   435  | −1.1%  |
-| Step 2: AT-PD                 |   460  |   460  |  0.0%  |
-| Step 2: AT-GD                 |   520  |   520  |  0.0%  |
-| Step 2: AO-PN                 |   535  |   530  | −0.9%  |
-| Step 2: AO-GN                 |   595  |   590  | −0.8%  |
-| Step 3: HW 10kt ratio (avg)   | 0.754  | 0.750  | −0.5%  |
-| Step 3: TW 5kt ratio (avg)    | 1.187  | 1.185  | −0.2%  |
-| Step 4: +2% slope             |   440  |   440  |  0.0%  |
-| **Landing** | | | |
-| L1: SL                        |   370  |   370  |  0.0%  |
-| L1: 2000ft                    |   390  |   390  |  0.0%  |
-| L1: 4000ft                    |   405  |   410  | +1.2%  |
-| L2: AT-PD                     |   430  |   430  |  0.0%  |
-| L2: P-GD                      |   470  |   470  |  0.0%  |
-| L2: AO-PN                     |   500  |   500  |  0.0%  |
-| L2: AT-GD                     |   550  |   550  |  0.0%  |
-| L2: AO-GN                     |   620  |   610  | −1.6%  |
-| L3: HW 10kt ratio (avg)       | 0.747  | 0.750  | +0.4%  |
-| L3: TW 5kt ratio (avg)        | 1.187  | 1.20   | +1.1%  |
-| L4: +2% upslope               |   325  |   326  | +0.2%  |
+| Aircraft | Test | Expected | Traced | Δ |
+|----------|------|---------:|-------:|--:|
+| C172N    | T/O base 600, 10 kt HW | 520 | 520 | 0 |
+| C172N    | T/O base 600, 5 kt TW  | 715 | 715 | 0 |
+| C152     | T/O base 600, 10 kt HW | 520 | 520 | 0 |
+| C152     | T/O base 600, 5 kt TW  | 715 | 715 | 0 |
+| C172N    | LDG base 700, +2% slope| 580 | 580 | 0 |
+| C152     | LDG base 700, +2% slope| 580 | 580 | 0 |
 
----
+## Engine smoke tests (v96)
 
-## Data fixes applied (engine v66 → next)
+Test against PA-38 PPD baseline at SL/15°C (d_ppd 440 m T/O, 490 m LDG):
 
-All three P-chart data files were updated based on the validation findings:
+| Test | Expected | Engine | Pass |
+|------|---:|---:|:---:|
+| T/O baseline | 440 | 440.0 | ✓ |
+| T/O 10 kt HW | ~387 | 385.9 | ✓ |
+| T/O 5 kt TW  | ~526 | 526.2 | ✓ |
+| T/O +1% slope | ~464 | 464.1 | ✓ |
+| T/O +2% slope | ~494 | 493.8 | ✓ |
+| T/O +3% slope | ~534 | 534.7 | ✓ |
+| LDG baseline | 490 | 490.0 | ✓ |
+| LDG 10 kt HW | ~421 | 420.9 | ✓ |
+| LDG 5 kt TW  | ~590 | 590.1 | ✓ |
+| LDG +1% slope | ~455 | 454.9 | ✓ |
+| LDG +2% slope | ~422 | 421.9 | ✓ |
+| LDG -1% slope | ~528 | 528.2 | ✓ |
 
-### 1. Wind factors — split takeoff/landing, chart-derived values
+All engine outputs match chart-derived expectations within ±2 m. Reading
+uncertainty of source traces is ~5-10 m.
 
-Replaced single `wind_factor` block with `wind_factor_takeoff` and
-`wind_factor_landing`. Engine updated to consume the new fields, falling
-back to legacy `wind_factor` for compatibility.
+## OOR behaviour
 
-| Factor | Was (AC91-3) | Now (chart-derived) |
-|---|---|---|
-| TO HW per kt   | 1.5%  | **2.5%** |
-| TO TW per kt   | 6.0%  | **3.7%** |
-| LD HW per kt   | 1.5%  | **2.5%** |
-| LD TW per kt   | 6.0%  | **4.0%** |
+- **Headwind > 20 kt**: amber caution. Distance shown is a safe upper bound.
+  Still GO if floor ≤ TORA.
+- **Tailwind > 5 kt**: NO-GO. Chart-floor underestimates the penalty.
+- **Envelope OOR (PA/elev/OAT outside chart range)**: NO-GO.
+- **Slope OOR (e.g. +3% slope at base 1000 m off-chart)**: NO-GO.
 
-These values apply across all three aircraft (PA-38, C172N, C152) — the
-NZ P-chart family uses consistent wind factors that differ from AC91-3's
-generic ones.
+## Known limitations
 
-### 2. Slope — split takeoff/landing
-
-Replaced single `slope_factor_pct_per_pct` with `_takeoff` and `_landing`
-variants:
-
-| Factor | Was | Now |
-|---|---|---|
-| TO upslope per 1%  | 5%  | 5%  (unchanged, matches charts) |
-| LD upslope per 1%  | 5%  | **6%** (chart-derived) |
-
-### 3. PA-38 landing AO-GN multiplier
-
-Was 1.885, traced as 1.697. **Updated to 1.697.**
-
-### 4. C172N takeoff weight multipliers
-
-Refined slightly (chart-traced values):
-
-| Weight | Was  | Now   |
-|---|---|---|
-| 953 kg | 0.780 | **0.800** |
-| 862 kg | 0.613 | **0.621** |
-
----
-
-## Known limitations (acceptable for current operating envelope)
-
-1. **Landing HW factor is non-linear in distance** on all 3 charts.
-   Best-fit constant (~2.5%/kt) gives ±0.5%/kt drift across the chart range.
-   At the operating range (300-700 m), the resulting distance error is
-   bounded to about ±5%. Could be addressed in a future engine version
-   with a Y-dependent landing wind factor lookup table.
-
-2. **Landing TW factor weakly drifts** from 4.0%/kt at shorter distances
-   to 3.3%/kt at longer. Best-fit constant 4.0%/kt errs slightly on the
-   conservative side at longer distances (good — better safe than sorry).
-
-3. **Tailwind > 5 kt and headwind > 20 kt are silently clamped** by the
-   engine to those limits. AC91-3 only defines behaviour up to those
-   values. *To do (see next-build item 26):* return `outOfRange: true`
-   and force NO-GO in the UI when input wind exceeds AC91-3's defined
-   limits.
-
-4. **FM mode wind layer** still uses AC91-3's 1.5%/6.0% (not the chart's
-   2.5%/3.7-4.0%). This is intentional — FM tables don't include wind, so
-   AC91-3 is the documented advisory factor. The P-chart's chart-baked
-   factors are *not* applicable to FM mode.
-
-5. **Slope: landing chart shows 6%/1% (chart vs engine's 5%/1%)**, now
-   matched in data. Small effect at typical operating slopes (≤2%).
-
----
-
-## Files
-
-- `VALIDATION.md` — this document
-- `tools/validate-fm.js` — FM mode validation script (run from `/wb`)
-- `perf-pa38.js`, `perf-c172n.js`, `perf-c152.js` — updated perf data files
-- `performance.js` — updated engine
-
+1. Chart traces have ~5-10 m reading precision; the piecewise model can't be
+   more precise than its inputs.
+2. At extreme combinations (high base + high slope) the chart may go off-page.
+   Engine returns OOR.
+3. PA-38 takeoff PA grid extends to ~3000 ft PA only. Beyond that the engine
+   extrapolates the PA × OAT bilinear surface.
+4. The shared NZ_PCHART_CORRECTIONS object is for NZ-standard P-charts only.
+   Other aircraft need their own correction tables.

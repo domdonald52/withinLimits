@@ -336,53 +336,86 @@ refresh();
 // chart-floor base distances (PPD MTOW at SL/15°C, varying the X-input).
 // Format: { aircraft, phase: 'takeoff'|'landing', direction: 'HW'|'TW', wind_kt,
 //           points: [{base_m, result_m}, ...], factor_engine_pct_per_kt }
-const TRACED = [
-  // PA-38 Takeoff HW @ 10kt (linear, 2.5%/kt baked in engine)
-  { aircraft:'PA-38', phase:'takeoff', direction:'HW', wind_kt:10, factor:0.025,
-    points:[{base:400,result:300},{base:500,result:375},{base:600,result:445},{base:700,result:530}] },
-  // PA-38 Takeoff TW @ 5kt (3.7%/kt)
-  { aircraft:'PA-38', phase:'takeoff', direction:'TW', wind_kt:5, factor:0.037,
-    points:[{base:400,result:475},{base:500,result:595},{base:600,result:710},{base:700,result:830}] },
-  // PA-38 Landing HW @ 10kt (non-linear chart, single best-fit 2.5%/kt)
-  { aircraft:'PA-38', phase:'landing', direction:'HW', wind_kt:10, factor:0.025,
-    points:[{base:300,result:200},{base:400,result:290},{base:500,result:385},{base:600,result:460}] },
-  // PA-38 Landing TW @ 5kt (4.0%/kt)
-  { aircraft:'PA-38', phase:'landing', direction:'TW', wind_kt:5, factor:0.040,
-    points:[{base:300,result:360},{base:400,result:490},{base:500,result:600},{base:600,result:710}] },
+// Updated v96+: traces collected at the corrected wind kts (10 kt HW, 5 kt TW).
+// Wind nomographs are shared across PA-38, C172N, C152 — same data for all three.
+const TRACED_SHARED = {
+  'takeoff-HW-10': {
+    points: [
+      {base:400,result:350},{base:500,result:440},{base:600,result:520},
+      {base:700,result:615},{base:800,result:705},{base:900,result:795},
+      {base:1000,result:880},{base:1100,result:980},{base:1200,result:1075}
+    ],
+    pct_table: [
+      {base_m:400,pct:0.01250},{base_m:500,pct:0.01200},{base_m:600,pct:0.01333},
+      {base_m:700,pct:0.01214},{base_m:800,pct:0.01188},{base_m:900,pct:0.01167},
+      {base_m:1000,pct:0.01200},{base_m:1100,pct:0.01091},{base_m:1200,pct:0.01042}
+    ],
+  },
+  'takeoff-TW-5': {
+    points: [
+      {base:300,result:360},{base:400,result:480},{base:500,result:595},
+      {base:600,result:715},{base:700,result:825},{base:800,result:925},
+      {base:900,result:1050},{base:1000,result:1140}
+    ],
+    pct_table: [
+      {base_m:300,pct:0.04000},{base_m:400,pct:0.04000},{base_m:500,pct:0.03800},
+      {base_m:600,pct:0.03833},{base_m:700,pct:0.03571},{base_m:800,pct:0.03125},
+      {base_m:900,pct:0.03333},{base_m:1000,pct:0.02800}
+    ],
+  },
+  'landing-HW-10': {
+    points: [
+      {base:300,result:255},{base:400,result:340},{base:500,result:430},
+      {base:600,result:525},{base:700,result:620},{base:800,result:723},
+      {base:900,result:815},{base:1000,result:908}
+    ],
+    pct_table: [
+      {base_m:300,pct:0.01500},{base_m:400,pct:0.01500},{base_m:500,pct:0.01400},
+      {base_m:600,pct:0.01250},{base_m:700,pct:0.01143},{base_m:800,pct:0.00962},
+      {base_m:900,pct:0.00944},{base_m:1000,pct:0.00920}
+    ],
+  },
+  'landing-TW-5': {
+    points: [
+      {base:300,result:360},{base:400,result:483},{base:500,result:602},
+      {base:600,result:708},{base:700,result:807},{base:800,result:912},
+      {base:900,result:1010},{base:1000,result:1105}
+    ],
+    pct_table: [
+      {base_m:300,pct:0.04000},{base_m:400,pct:0.04150},{base_m:500,pct:0.04080},
+      {base_m:600,pct:0.03600},{base_m:700,pct:0.03057},{base_m:800,pct:0.02800},
+      {base_m:900,pct:0.02444},{base_m:1000,pct:0.02100}
+    ],
+  },
+};
 
-  // C172N Takeoff HW @ 10kt (linear, 2.5%/kt)
-  { aircraft:'C172N', phase:'takeoff', direction:'HW', wind_kt:10, factor:0.025,
-    points:[{base:400,result:300},{base:500,result:385},{base:600,result:450},{base:700,result:520}] },
-  // C172N Takeoff TW @ 5kt (3.7%/kt)
-  { aircraft:'C172N', phase:'takeoff', direction:'TW', wind_kt:5, factor:0.037,
-    points:[{base:400,result:480},{base:500,result:600},{base:600,result:710},{base:700,result:815}] },
-  // C172N Landing HW @ 10kt (non-linear, best-fit 2.5%/kt)
-  { aircraft:'C172N', phase:'landing', direction:'HW', wind_kt:10, factor:0.025,
-    points:[{base:300,result:200},{base:400,result:290},{base:500,result:375},{base:600,result:460},{base:700,result:550}] },
-  // C172N Landing TW @ 5kt (4.0%/kt drifting)
-  { aircraft:'C172N', phase:'landing', direction:'TW', wind_kt:5, factor:0.040,
-    points:[{base:300,result:360},{base:400,result:480},{base:500,result:600},{base:600,result:710},{base:700,result:810}] },
+const TRACED = [];
+['PA-38','C172N','C152'].forEach(ac => {
+  [['takeoff','HW',10],['takeoff','TW',5],['landing','HW',10],['landing','TW',5]].forEach(([phase,dir,kt]) => {
+    const key = `${phase}-${dir}-${kt}`;
+    const sh = TRACED_SHARED[key];
+    TRACED.push({ aircraft: ac, phase, direction: dir, wind_kt: kt, pct_table: sh.pct_table, points: sh.points });
+  });
+});
 
-  // C152 Takeoff HW @ 10kt
-  { aircraft:'C152', phase:'takeoff', direction:'HW', wind_kt:10, factor:0.025,
-    points:[{base:400,result:300},{base:500,result:385},{base:600,result:450},{base:700,result:530}] },
-  // C152 Takeoff TW @ 5kt
-  { aircraft:'C152', phase:'takeoff', direction:'TW', wind_kt:5, factor:0.037,
-    points:[{base:400,result:480},{base:500,result:600},{base:600,result:710},{base:700,result:815}] },
-  // C152 Landing HW @ 10kt (non-linear)
-  { aircraft:'C152', phase:'landing', direction:'HW', wind_kt:10, factor:0.025,
-    points:[{base:300,result:200},{base:400,result:290},{base:500,result:390},{base:600,result:480},{base:700,result:550}] },
-  // C152 Landing TW @ 5kt
-  { aircraft:'C152', phase:'landing', direction:'TW', wind_kt:5, factor:0.040,
-    points:[{base:300,result:360},{base:400,result:480},{base:500,result:600},{base:600,result:705},{base:700,result:810}] },
-];
+function interpPct(table, base_m){
+  if (base_m <= table[0].base_m) return table[0].pct;
+  if (base_m >= table[table.length-1].base_m) return table[table.length-1].pct;
+  for (let i = 0; i < table.length-1; i++){
+    if (base_m >= table[i].base_m && base_m <= table[i+1].base_m){
+      const f = (base_m - table[i].base_m) / (table[i+1].base_m - table[i].base_m);
+      return table[i].pct + (table[i+1].pct - table[i].pct) * f;
+    }
+  }
+  return table[0].pct;
+}
 
 function renderTracedGrid(){
   const host = document.getElementById('traced-grid');
   host.innerHTML = TRACED.map((s, i) => `
     <div class="card">
       <h2>${s.aircraft} \u2014 ${s.phase} ${s.direction} @ ${s.wind_kt} kt</h2>
-      <div class="sub">Engine: ${(s.factor*100).toFixed(1)}%/kt linear. Points = chart traces; band = \u00b15% around engine.</div>
+      <div class="sub">Engine: piecewise %/kt (varies with base distance). Points = chart traces; band = \u00b15% around engine.</div>
       <canvas id="traced-${i}" height="180"></canvas>
     </div>
   `).join('');
@@ -390,14 +423,16 @@ function renderTracedGrid(){
 }
 
 function drawTraced(s, canvasId){
-  // Compute engine line: for each base distance, engine predicts base * (1 - factor*wind) for HW, base * (1 + factor*wind) for TW
+  // Engine line is now piecewise: at each base, look up pct/kt from the table and apply
   const bases = s.points.map(p => p.base);
   const minBase = Math.min(...bases) - 50;
   const maxBase = Math.max(...bases) + 50;
   const xs = [];
   for (let b = minBase; b <= maxBase; b += 10) xs.push(b);
-  const mult = s.direction === 'HW' ? (1 - s.factor * s.wind_kt) : (1 + s.factor * s.wind_kt);
-  const engineLine = xs.map(b => b * mult);
+  const engineLine = xs.map(b => {
+    const pct = interpPct(s.pct_table, b);
+    return s.direction === 'HW' ? b * (1 - pct * s.wind_kt) : b * (1 + pct * s.wind_kt);
+  });
   const bandUpper = engineLine.map(v => v * 1.05);
   const bandLower = engineLine.map(v => v * 0.95);
   const traced = s.points.map(p => ({ x: p.base, y: p.result }));
@@ -408,7 +443,7 @@ function drawTraced(s, canvasId){
       datasets: [
         { type: 'line', label: '+5%', data: bandUpper, borderColor: 'transparent', backgroundColor: 'rgba(94,177,255,0.10)', pointRadius: 0, fill: '+1' },
         { type: 'line', label: '-5%', data: bandLower, borderColor: 'transparent', backgroundColor: 'rgba(94,177,255,0.10)', pointRadius: 0, fill: false },
-        { type: 'line', label: 'Engine (linear ' + (s.factor*100).toFixed(1) + '%/kt)', data: engineLine, borderColor: '#5eb1ff', borderWidth: 2, pointRadius: 0, fill: false },
+        { type: 'line', label: 'Engine (piecewise)', data: engineLine, borderColor: '#5eb1ff', borderWidth: 2, pointRadius: 0, fill: false },
         { type: 'scatter', label: 'Chart trace', data: traced, borderColor: '#14b8a6', backgroundColor: '#14b8a6', pointRadius: 5, showLine: false },
       ],
     },

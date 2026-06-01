@@ -1,9 +1,10 @@
-const CACHE = 'wb-v95';
+const CACHE = 'wb-v97';
 const ASSETS = [
   './',
   './index.html',
   './app.js',
   './performance.js',
+  './perf-nz-corrections.js',
   './perf-pa38.js',
   './perf-c172n.js',
   './perf-c152.js',
