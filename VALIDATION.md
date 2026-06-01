@@ -143,3 +143,25 @@ uncertainty of source traces is ~5-10 m.
    extrapolates the PA × OAT bilinear surface.
 4. The shared NZ_PCHART_CORRECTIONS object is for NZ-standard P-charts only.
    Other aircraft need their own correction tables.
+
+## PA × OAT bilinear validation (v99)
+
+Spot-checked the engine's bilinear interpolation between grid reference points
+against fresh chart traces at intermediate (PA, OAT) cells. PPD baseline, MTOW,
+0 wind, 0 slope, dry. All values in metres.
+
+| Aircraft | PA (ft) | OAT (°C) | Engine | Traced | Δ |
+|----------|--------:|---------:|-------:|-------:|---|
+| PA-38    | 1000    | 15       | 530    | 540    | +1.9% |
+| PA-38    | 3000    | 15       | 685    | 690    | +0.7% |
+| PA-38    | 0       | 25       | 515    | 515    | 0% |
+| PA-38    | 1000    | 25       | 600    | 600    | 0% |
+| C172N    | 1000    | 15       | 535    | 535-540| ±0.5% |
+
+Bilinear interpolation between the 3×3 grid points captures the P-chart's
+PA × OAT relationship faithfully (within ±2% reading tolerance).
+
+Note: chart's OAT-minimum line depends on PA — colder OAT extends valid range
+to higher PAs only. Engine grids may include extrapolated (PA, OAT) reference
+points beyond the chart's drawn region. Performance values for these points
+are bilinearly inferred from the chart's defined corners.
