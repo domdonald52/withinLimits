@@ -134,7 +134,6 @@ const App = (function(){
   let mode = 'forward';
   let stationValues = {};   // {ac_id: {station_idx: weight}}
   let fuelInput = {};       // {ac_id: {fuel: x, duration: y}}
-  let legsInput = {};       // {ac_id: [{name, duration, uplift_after}]}
   let perfInput = {
     to_runway: { id: null, ident: '', heading: 0, elev: 0, slope: 0, tora: 0, lda: 0, surface: 'paved', group: null },
     to_condition: 'dry',
@@ -150,7 +149,7 @@ const App = (function(){
     perf_method: 'pchart',
   };
   let recentRunways = [];
-  const APP_VERSION = 'wb-v92';
+  const APP_VERSION = 'wb-v93';
   let runways = [];
   let selectedToRunwayId = null;
   let selectedLdRunwayId = null;
@@ -375,75 +374,6 @@ const App = (function(){
     return { ac, items, tow, m_to, cg_to, ldw, cg_ld, zfw, cg_zf, fuelWeight, fuelBurned, burnedWeight, fuel, duration, violations };
   }
 
-  // Multi-leg: each leg has {name, duration, uplift_before} (uplift_before is fuel added before this leg starts).
-  // Leg 1 uplift_before is ignored — starting fuel comes from the main fuelInput.fuel value.
-  function calcMultileg(ac){
-    const sv = stationValues[ac.id] || {};
-    const fc = fuelInput[ac.id] || {};
-    const fuelDens = u(ac).fuel_density;
-    let payloadW = ac.empty_weight;
-    let payloadM = ac.empty_weight * ac.empty_arm;
-    ac.stations.forEach((s, idx) => {
-      const w = sv[idx] !== undefined ? sv[idx] : s.default || 0;
-      payloadW += w; payloadM += w * s.arm;
-    });
-    const startFuel = fc.fuel !== undefined ? fc.fuel : ac.usable_fuel;
-    const legs = (legsInput[ac.id] || []).slice();
-    if (legs.length === 0) legs.push({ name: 'Leg 1', duration: 1.0, uplift_before: 0 });
-
-    const legResults = [];
-    let fuel = startFuel;
-    let violations = [];
-    legs.forEach((leg, i) => {
-      // Uplift before leg (skip for leg 0 — starting fuel is what's in the tank)
-      if (i > 0 && leg.uplift_before > 0){
-        fuel = Math.min(fuel + leg.uplift_before, ac.usable_fuel);
-      }
-      // Tank overfill warning
-      if (i > 0 && leg.uplift_before > 0 && (fuel + leg.uplift_before - ac.usable_fuel > 0.5)){
-        // already clamped, but flag
-      }
-
-      const startW = payloadW + fuel * fuelDens;
-      const startM = payloadM + fuel * fuelDens * ac.fuel_arm;
-      const startCG = startW > 0 ? startM / startW : 0;
-
-      const burnFuel = Math.min(fuel, leg.duration * ac.burn_rate);
-      const endFuel = fuel - burnFuel;
-      const endW = payloadW + endFuel * fuelDens;
-      const endM = payloadM + endFuel * fuelDens * ac.fuel_arm;
-      const endCG = endW > 0 ? endM / endW : 0;
-
-      const startOK_W = startW <= ac.mtow;
-      const startOK_CG = inEnvelope(ac.envelope, startW, startCG);
-      const endOK_W = !ac.mlw || endW <= ac.mlw;
-      const endOK_CG = endW > 0 && inEnvelope(ac.envelope, endW, endCG);
-      const ranOutOfFuel = leg.duration * ac.burn_rate > fuel + 0.001;
-
-      if (!startOK_W) violations.push(`Leg ${i+1}: takeoff weight ${fmt(startW)} > MTOW ${fmt(ac.mtow)}`);
-      if (!startOK_CG) violations.push(`Leg ${i+1}: takeoff CG ${fmtArm(startCG, ac)} out of envelope`);
-      if (!endOK_W) violations.push(`Leg ${i+1}: landing weight ${fmt(endW)} > MLW ${fmt(ac.mlw)}`);
-      if (!endOK_CG) violations.push(`Leg ${i+1}: landing CG ${fmtArm(endCG, ac)} out of envelope`);
-      if (ranOutOfFuel) violations.push(`Leg ${i+1}: planned ${fmt(leg.duration,2)}h but only ${fmt(fuel/ac.burn_rate,2)}h of fuel available`);
-
-      legResults.push({
-        idx: i, name: leg.name || `Leg ${i+1}`, duration: leg.duration,
-        uplift_before: i > 0 ? leg.uplift_before : 0,
-        startFuel: fuel, endFuel, burnFuel,
-        startW, startCG, endW, endCG,
-        startOK_W, startOK_CG, endOK_W, endOK_CG, ranOutOfFuel
-      });
-      fuel = endFuel;
-    });
-    // Reserve check on final leg
-    const reserveMin = perfInput.op_time === "night" ? 45 : (ac.reserve_minutes || 30);
-    const reserveFuel = (reserveMin / 60) * ac.burn_rate;
-    const finalFuel = legResults.length ? legResults[legResults.length-1].endFuel : 0;
-    const reserveOK = finalFuel >= reserveFuel - 0.001;
-    if (!reserveOK) violations.push(`Final fuel ${fmt(finalFuel,1)} ${u(ac).vol} below ${reserveMin}-min reserve (${fmt(reserveFuel,1)} ${u(ac).vol})`);
-
-    return { legResults, violations, payloadW, payloadM, startFuel, finalFuel, reserveFuel, reserveOK };
-  }
 
   // and (separately) that landing weight + landing CG stay in envelope.
   // Returns max usable fuel and corresponding endurance with reserve.
@@ -778,96 +708,13 @@ const App = (function(){
       // also set the forward inputs so the chart shows the max-fuel case
       fc.fuel = Math.round(r.bestFuel * 10) / 10;
       fc.duration = Math.round(r.usableEndurance * 100) / 100;
-    } else if (mode === 'multileg'){
-      titleEl.textContent = 'Legs';
-      const legs = legsInput[ac.id] = legsInput[ac.id] || [{ name: 'Leg 1', duration: 1.0, uplift_before: 0 }];
-      host.innerHTML = `
-        <div class="row">
-          <div>
-            <label>Starting fuel (${u(ac).vol})</label>
-            <input type="number" inputmode="decimal" id="in-fuel-ml" value="${fc.fuel}" min="0" max="${ac.usable_fuel}" step="0.5">
-            <small class="help">tank ${fmt(ac.usable_fuel,1)} ${u(ac).vol} · burn ${fmt(ac.burn_rate,1)} ${u(ac).flow} · reserve ${ac.reserve_minutes} min</small>
-          </div>
-        </div>
-        <div id="legs-list" style="margin-top:10px"></div>
-        <button class="btn secondary" onclick="App.addLeg()" style="margin-top:4px">+ Add leg</button>
-      `;
-      host.querySelector('#in-fuel-ml').addEventListener('input', e => { fc.fuel = parseFloat(e.target.value) || 0; update(); });
-      renderLegs(ac);
     }
   }
 
-  function renderLegs(ac){
-    const legs = legsInput[ac.id] || [];
-    const ml = calcMultileg(ac);
-    const host = document.getElementById('legs-list');
-    if (!host) return;
-    host.innerHTML = legs.map((leg, i) => {
-      const r = ml.legResults[i] || {};
-      const startBad = !r.startOK_W || !r.startOK_CG;
-      const endBad = !r.endOK_W || !r.endOK_CG || r.ranOutOfFuel;
-      const upliftRow = i === 0 ? '' : `
-        <div style="flex:1">
-          <label>Uplift before leg (${u(ac).vol})</label>
-          <input type="number" inputmode="decimal" step="0.5" min="0" max="${ac.usable_fuel}" value="${leg.uplift_before||0}" data-li="${i}" data-f="uplift_before">
-        </div>`;
-      return `
-        <div class="leg">
-          <div class="leg-head">
-            <span class="num">${i+1}</span>
-            <input type="text" class="name" value="${leg.name||('Leg '+(i+1))}" data-li="${i}" data-f="name" style="border:0;background:transparent;color:var(--text);font-size:14px;font-weight:600;padding:4px 0">
-            ${legs.length > 1 ? `<button class="icon-btn" onclick="App.removeLeg(${i})" aria-label="Remove leg" style="width:28px;height:28px;font-size:14px">✕</button>` : ''}
-          </div>
-          <div class="row" style="margin-bottom:4px">
-            <div style="flex:1">
-              <label>Duration (h)</label>
-              <input type="number" inputmode="decimal" step="0.25" min="0" max="10" value="${leg.duration}" data-li="${i}" data-f="duration">
-            </div>
-            ${upliftRow}
-          </div>
-          <div class="leg-summary">
-            Start: <span class="${startBad?'bad':'ok'}">${fmt(r.startW||0)} ${u(ac).w} · CG ${fmtArm(r.startCG||0, ac)}</span>
-            &nbsp;→&nbsp;
-            End: <span class="${endBad?'bad':'ok'}">${fmt(r.endW||0)} ${u(ac).w} · CG ${fmtArm(r.endCG||0, ac)}</span>
-            <br>Fuel: ${fmt(r.startFuel||0,1)} → ${fmt(r.endFuel||0,1)} ${u(ac).vol} (burn ${fmt(r.burnFuel||0,1)})
-          </div>
-        </div>
-      `;
-    }).join('');
-    host.querySelectorAll('input').forEach(inp => {
-      inp.oninput = e => {
-        const i = +e.target.dataset.li;
-        const f = e.target.dataset.f;
-        legs[i][f] = (f === 'name') ? e.target.value : (parseFloat(e.target.value) || 0);
-        update();
-      };
-    });
-  }
-
-  function addLeg(){
-    const ac = fleet.find(a => a.id === selectedId);
-    const legs = legsInput[ac.id] = legsInput[ac.id] || [];
-    legs.push({ name: `Leg ${legs.length+1}`, duration: 1.0, uplift_before: 0 });
-    renderFuelControls();
-    update();
-  }
-  function removeLeg(i){
-    const ac = fleet.find(a => a.id === selectedId);
-    const legs = legsInput[ac.id] || [];
-    legs.splice(i, 1);
-    if (legs.length === 0) legs.push({ name: 'Leg 1', duration: 1.0, uplift_before: 0 });
-    renderFuelControls();
-    update();
-  }
 
   function renderResults(){
     const ac = fleet.find(a => a.id === selectedId);
     if (!ac) return;
-
-    if (mode === 'multileg'){
-      renderMultilegResults(ac);
-      return;
-    }
 
     const r = calc(ac);
     const towOK = r.tow <= ac.mtow;
@@ -931,121 +778,6 @@ const App = (function(){
     renderChart(r);
   }
 
-  function renderMultilegResults(ac){
-    const ml = calcMultileg(ac);
-    const allW = ml.legResults.flatMap(l => [l.startW, l.endW]);
-    const allCG = ml.legResults.flatMap(l => [l.startCG, l.endCG]);
-    const maxW = allW.length ? Math.max(...allW) : 0;
-    const minW = allW.length ? Math.min(...allW) : 0;
-    const fwdCG = allCG.length ? Math.min(...allCG) : 0;
-    const aftCG = allCG.length ? Math.max(...allCG) : 0;
-
-    const overMtow = maxW > ac.mtow;
-    const allCGok = ml.legResults.every(l => l.startOK_CG && l.endOK_CG);
-
-    const stat = (label, val, sub, ok) => `
-      <div class="stat ${ok ? 'ok' : 'bad'}">
-        <div class="l">${label}</div>
-        <div class="v">${val}</div>
-        <div class="s">${sub}</div>
-      </div>`;
-
-    document.getElementById('results').innerHTML =
-      stat('Max weight on trip', `${fmt(maxW)} ${u(ac).w}`, overMtow ? `over MTOW ${fmt(ac.mtow)}` : `MTOW ${fmt(ac.mtow)}`, !overMtow) +
-      stat('Min weight on trip', `${fmt(minW)} ${u(ac).w}`, '', true) +
-      stat('Forward-most CG', `${fmtArm(fwdCG, ac)} ${u(ac).arm}`, allCGok ? 'all in envelope' : 'some out of envelope', allCGok) +
-      stat('Aft-most CG', `${fmtArm(aftCG, ac)} ${u(ac).arm}`, allCGok ? 'all in envelope' : 'some out of envelope', allCGok);
-
-    const bh = document.getElementById('banner-host');
-    if (ml.violations.length === 0){
-      const totalH = ml.legResults.reduce((s,l) => s+l.duration, 0);
-      bh.innerHTML = `<div class="banner ok">✓ All ${ml.legResults.length} leg${ml.legResults.length>1?'s':''} within limits. Total flight: ${fmt(totalH,2)} h. Final fuel: ${fmt(ml.finalFuel,1)} ${u(ac).vol} (reserve req: ${fmt(ml.reserveFuel,1)}).</div>`;
-    } else {
-      bh.innerHTML = `<div class="banner bad">⚠ ${ml.violations.length} issue${ml.violations.length>1?'s':''}:<br>${ml.violations.map(v=>'• '+v).join('<br>')}</div>`;
-    }
-
-    // Breakdown table = leg-by-leg
-    let rows = '';
-    ml.legResults.forEach((l, i) => {
-      if (i > 0 && l.uplift_before > 0){
-        rows += `<tr><td><em>Uplift</em></td><td>+${fmt(l.uplift_before * u(ac).fuel_density, 1)}</td><td>${fmtArm(ac.fuel_arm, ac)}</td><td>—</td></tr>`;
-      }
-      rows += `<tr><td><strong>${l.name} start</strong></td><td><strong>${fmt(l.startW,1)}</strong></td><td><strong>${fmtArm(l.startCG, ac)}</strong></td><td>${fmt(l.startFuel,1)} ${u(ac).vol}</td></tr>`;
-      rows += `<tr><td>Burn ${fmt(l.duration,2)}h</td><td>-${fmt(l.burnFuel * u(ac).fuel_density,1)}</td><td>${fmtArm(ac.fuel_arm, ac)}</td><td>−${fmt(l.burnFuel,1)} ${u(ac).vol}</td></tr>`;
-      rows += `<tr><td>${l.name} end</td><td>${fmt(l.endW,1)}</td><td>${fmtArm(l.endCG, ac)}</td><td>${fmt(l.endFuel,1)} ${u(ac).vol}</td></tr>`;
-    });
-    document.getElementById('breakdown').innerHTML = `
-      <table>
-        <thead><tr><td><strong>Item</strong></td><td><strong>${u(ac).w}</strong></td><td><strong>${u(ac).arm}</strong></td><td><strong>fuel / note</strong></td></tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
-    `;
-
-    document.getElementById('chart-caption').textContent = 'green = leg start · amber = leg end · numbers next to points = leg index';
-    renderMultilegChart(ml, ac);
-  }
-
-  function renderMultilegChart(ml, ac){
-    if (typeof Chart === 'undefined'){ showChartFallback(); return; }
-    const env = [...ac.envelope].sort((a,b) => a.w - b.w);
-    const fwdPts = [], aftPts = [];
-    env.forEach(p => { fwdPts.push({x: p.fwd, y: p.w}); aftPts.push({x: p.aft, y: p.w}); });
-    const poly = fwdPts.concat(aftPts.slice().reverse()).concat([fwdPts[0]]);
-
-    const allArms = env.flatMap(p => [p.fwd, p.aft]).concat(ml.legResults.flatMap(l => [l.startCG, l.endCG]));
-    const allWeights = env.flatMap(p => [p.w]).concat(ml.legResults.flatMap(l => [l.startW, l.endW]));
-    const armSpan = Math.max(...allArms) - Math.min(...allArms);
-    const armPad = Math.max(armSpan * 0.15, ac.units === 'metric' ? 50 : 1);
-    const minA = Math.min(...allArms) - armPad;
-    const maxA = Math.max(...allArms) + armPad;
-    const minW = Math.min(...allWeights) * 0.92;
-    const maxW = Math.max(...allWeights) * 1.05;
-
-    // Build a trajectory: start1, end1, [uplift jump], start2, end2, ...
-    const traj = [];
-    const startPts = [];
-    const endPts = [];
-    ml.legResults.forEach((l, i) => {
-      startPts.push({ x: l.startCG, y: l.startW, label: `${i+1}↑` });
-      endPts.push({ x: l.endCG, y: l.endW, label: `${i+1}↓` });
-      traj.push({ x: l.startCG, y: l.startW });
-      traj.push({ x: l.endCG, y: l.endW });
-    });
-
-    const datasets = [
-      { label: 'envelope', data: poly, showLine: true, fill: true, backgroundColor: 'rgba(52,211,153,.12)', borderColor: '#34d399', borderWidth: 1.5, pointRadius: 0, tension: 0, order: 5 },
-      { label: 'trajectory', data: traj, showLine: true, fill: false, borderColor: 'rgba(255,255,255,.35)', borderWidth: 1, borderDash: [4,4], pointRadius: 0, order: 4 },
-      { label: 'Leg start', data: startPts, backgroundColor: '#34d399', borderColor: '#0a3d2c', borderWidth: 2, pointRadius: 7, pointHoverRadius: 8, order: 1 },
-      { label: 'Leg end',   data: endPts,   backgroundColor: '#fbbf24', borderColor: '#3a2a0a', borderWidth: 2, pointRadius: 7, pointHoverRadius: 8, order: 2 }
-    ];
-
-    if (chart) chart.destroy();
-    const ctx = document.getElementById('env-chart').getContext('2d');
-    chart = new Chart(ctx, {
-      type: 'scatter',
-      data: { datasets },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        animation: false,
-        plugins: {
-          legend: { labels: { color: '#8a99b3', font: {size: 11}, filter: it => !['envelope','trajectory'].includes(it.text) } },
-          tooltip: {
-            callbacks: {
-              label: c => {
-                const lbl = c.raw.label || c.dataset.label;
-                return `${lbl}: ${fmtArm(c.parsed.x, ac)} ${u(ac).arm}, ${fmt(c.parsed.y)} ${u(ac).w}`;
-              }
-            }
-          }
-        },
-        scales: {
-          x: { type: 'linear', min: minA, max: maxA, title: { display: true, text: `CG arm (${u(ac).arm})`, color: '#8a99b3', font: {size: 11} }, ticks: { color: '#8a99b3', font: {size: 10} }, grid: { color: 'rgba(255,255,255,.05)' } },
-          y: { min: minW, max: maxW, title: { display: true, text: `Weight (${u(ac).w})`, color: '#8a99b3', font: {size: 11} }, ticks: { color: '#8a99b3', font: {size: 10} }, grid: { color: 'rgba(255,255,255,.05)' } }
-        }
-      }
-    });
-  }
 
   function showChartFallback(){
     const canvas = document.getElementById('env-chart');
@@ -1119,14 +851,12 @@ const App = (function(){
     if (!name) return;
     const sv = stationValues[ac.id] || {};
     const fc = fuelInput[ac.id] || {};
-    const legs = legsInput[ac.id] || [];
     const sc = {
       name: name.trim(),
       mode,
       stations: ac.stations.map((s, i) => sv[i] !== undefined ? sv[i] : (s.default || 0)),
       fuel: fc.fuel !== undefined ? fc.fuel : ac.usable_fuel,
       duration: fc.duration !== undefined ? fc.duration : 1.0,
-      legs: legs.map(l => ({ name: l.name, duration: l.duration, uplift_before: l.uplift_before || 0 }))
     };
     ac.scenarios = ac.scenarios || [];
     // overwrite if same name
@@ -1151,8 +881,7 @@ const App = (function(){
     stationValues[ac.id] = {};
     sc.stations.forEach((w, i) => { stationValues[ac.id][i] = w; });
     fuelInput[ac.id] = { fuel: sc.fuel, duration: sc.duration };
-    legsInput[ac.id] = (sc.legs && sc.legs.length) ? sc.legs.map(l => ({...l})) : [{ name: 'Leg 1', duration: 1.0, uplift_before: 0 }];
-    if (sc.mode && sc.mode !== mode){ setMode(sc.mode); }
+    if (sc.mode && sc.mode !== 'multileg' && sc.mode !== mode){ setMode(sc.mode); }
     else { renderAll(); }
   }
 
@@ -3703,6 +3432,7 @@ const App = (function(){
     if (isPerf){
       renderPerformance();
     } else {
+      // Force a full re-render of the fuel card so it picks up any Perf-tab changes (like op_time → night reserve)
       renderFuelControls();
       renderResults();
     }
