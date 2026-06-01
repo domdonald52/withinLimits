@@ -150,7 +150,7 @@ const App = (function(){
     perf_method: 'pchart',
   };
   let recentRunways = [];
-  const APP_VERSION = 'wb-v88';
+  const APP_VERSION = 'wb-v90';
   let runways = [];
   let selectedToRunwayId = null;
   let selectedLdRunwayId = null;
@@ -436,10 +436,11 @@ const App = (function(){
       fuel = endFuel;
     });
     // Reserve check on final leg
-    const reserveFuel = (ac.reserve_minutes / 60) * ac.burn_rate;
+    const reserveMin = fc.night ? 45 : (ac.reserve_minutes || 30);
+    const reserveFuel = (reserveMin / 60) * ac.burn_rate;
     const finalFuel = legResults.length ? legResults[legResults.length-1].endFuel : 0;
     const reserveOK = finalFuel >= reserveFuel - 0.001;
-    if (!reserveOK) violations.push(`Final fuel ${fmt(finalFuel,1)} ${u(ac).vol} below ${ac.reserve_minutes}-min reserve (${fmt(reserveFuel,1)} ${u(ac).vol})`);
+    if (!reserveOK) violations.push(`Final fuel ${fmt(finalFuel,1)} ${u(ac).vol} below ${reserveMin}-min reserve (${fmt(reserveFuel,1)} ${u(ac).vol})`);
 
     return { legResults, violations, payloadW, payloadM, startFuel, finalFuel, reserveFuel, reserveOK };
   }
@@ -466,13 +467,15 @@ const App = (function(){
     let bestFuel = 0;
     let bestEndurance = 0;
     const maxTry = Math.min(maxFuelByMtow, maxFuelByTank);
+    const fcLocal = fuelInput[ac.id] || {};
+    const reserveMin = fcLocal.night ? 45 : (ac.reserve_minutes || 30);
     for (let f = maxTry; f >= 0; f -= 0.1){
       const tow = payload + f * fuelDens;
       const m_to = payloadMoment + f * fuelDens * ac.fuel_arm;
       const cg_to = tow > 0 ? m_to / tow : 0;
       if (!inEnvelope(ac.envelope, tow, cg_to)) continue;
       // Check landing assuming we burn until reserve only
-      const reserveFuel = (ac.reserve_minutes / 60) * ac.burn_rate;
+      const reserveFuel = (reserveMin / 60) * ac.burn_rate;
       const burnable = Math.max(0, f - reserveFuel);
       const ldw = tow - burnable * fuelDens;
       const m_ld = m_to - burnable * fuelDens * ac.fuel_arm;
@@ -483,7 +486,7 @@ const App = (function(){
       bestEndurance = ac.burn_rate > 0 ? f / ac.burn_rate : 0;
       break;
     }
-    const usableEndurance = Math.max(0, bestEndurance - ac.reserve_minutes / 60);
+    const usableEndurance = Math.max(0, bestEndurance - reserveMin / 60);
 
     return { payload, fuelDens, maxFuelByMtow, maxFuelByTank, bestFuel, bestEndurance, usableEndurance };
   }
@@ -671,12 +674,17 @@ const App = (function(){
             <input type="text" inputmode="numeric" pattern="[0-9]{1,2}:[0-9]{2}" id="in-dur" value="${hoursToHHMM(fc.duration)}" placeholder="0:00" maxlength="5">
           </div>
         </div>
+        <label style="display:inline-flex;align-items:center;gap:6px;margin-top:8px;font-size:12px;color:var(--muted);cursor:pointer;user-select:none">
+          <input type="checkbox" id="in-night" ${fc.night ? 'checked' : ''} style="width:auto;margin:0">
+          Night flight (45-min reserve)
+        </label>
         <div id="fuel-info" style="background:var(--panel-2);padding:6px 10px;border-radius:6px;margin-top:8px;font-size:12px;font-variant-numeric:tabular-nums;border-left:3px solid var(--accent);color:var(--muted)"></div>
         <div id="endurance-check" style="margin-top:6px;font-size:11px"></div>
       `;
       const refreshInfo = () => {
         const f = parseFloat(document.getElementById('in-fuel').value) || 0;
         const d = fc.duration || 0;
+        const reserveMin = fc.night ? 45 : (ac.reserve_minutes || 30);
         const info = document.getElementById('fuel-info');
         const el = document.getElementById('endurance-check');
         if (!info) return;
@@ -689,24 +697,25 @@ const App = (function(){
         if (unusable > 0) parts.push(`Dipstick: <strong>${fmt(dipstick,1)} ${u(ac).vol}</strong>`);
         parts.push(`Burn: <strong>${fmt(burnVol,1)} ${u(ac).vol}</strong> / <strong>${fmt(burnWt,1)} ${u(ac).w}</strong>`);
         if (ac.burn_rate > 0){
-          const reserveFuel = (ac.reserve_minutes / 60) * ac.burn_rate;
+          const reserveFuel = (reserveMin / 60) * ac.burn_rate;
           const usableEnd = Math.max(0, (f - reserveFuel) / ac.burn_rate);
-          parts.push(`Endurance: <strong>${hoursToHM(usableEnd)}</strong> + ${ac.reserve_minutes}-min reserve`);
+          parts.push(`Endurance: <strong>${hoursToHM(usableEnd)}</strong> + ${reserveMin}-min reserve`);
         }
         info.innerHTML = parts.join(' \u00b7 ');
         // Endurance check: red if planned duration exceeds usable endurance, amber if within 15 min of it
         if (ac.burn_rate > 0 && d > 0){
-          const reserveFuel = (ac.reserve_minutes / 60) * ac.burn_rate;
+          const reserveFuel = (reserveMin / 60) * ac.burn_rate;
           const usableEnd = Math.max(0, (f - reserveFuel) / ac.burn_rate);
           const marginH = usableEnd - d; // hours remaining before reserve is eaten into
           if (d > usableEnd){
             el.innerHTML = `<div class="banner bad" style="margin:0;font-size:11px">\u26a0 Planned duration ${hoursToHM(d)} exceeds usable endurance (${hoursToHM(usableEnd)})</div>`;
           } else if (marginH < 0.25){
-            el.innerHTML = `<div class="banner warn" style="margin:0;font-size:11px">\u26a0 Only ${hoursToHM(marginH)} margin before reserve \u2014 consider extra fuel</div>`;
+            el.innerHTML = `<div class="banner warn" style="margin:0;font-size:11px">\u26a0 Only ${hoursToHM(marginH)} margin before reserve</div>`;
           } else { el.innerHTML = ''; }
         } else { el.innerHTML = ''; }
       };
       host.querySelector('#in-fuel').addEventListener('input', e => { fc.fuel = parseFloat(e.target.value) || 0; refreshInfo(); update(); });
+      host.querySelector('#in-night').addEventListener('change', e => { fc.night = e.target.checked; refreshInfo(); update(); });
       host.querySelector('#in-fuel-max').addEventListener('click', () => {
         const r = calcReverse(ac);
         fc.fuel = r.bestFuel;
@@ -763,7 +772,7 @@ const App = (function(){
           <div>Max usable: <span class="big">${fmt(r.bestFuel, 1)} ${u(ac).vol}</span> &nbsp; (${fmt(r.bestFuel * r.fuelDens, 0)} ${u(ac).w})</div>
           ${unusable > 0 ? `<div style="margin-top:4px;font-size:13px">Dipstick level: <strong>${fmt(dipstick, 1)} ${u(ac).vol}</strong> &nbsp;<span style="color:var(--muted);font-size:11px">(includes ${fmt(unusable, 1)} ${u(ac).vol} unusable)</span></div>` : ''}
           <div style="margin-top:6px">Endurance to dry: <span class="big">${fmt(r.bestEndurance, 1)} h</span></div>
-          <div>Endurance after ${ac.reserve_minutes}-min reserve: <span class="big">${fmt(r.usableEndurance, 1)} h</span></div>
+          <div>Endurance after ${fc.night ? 45 : (ac.reserve_minutes || 30)}-min reserve${fc.night ? ' (night)' : ''}: <span class="big">${fmt(r.usableEndurance, 1)} h</span></div>
           <small class="help" style="margin-top:6px">Limited by: ${limitedBy}. Unusable fuel is already in the empty weight from the weighing report.</small>
         </div>
       `;
