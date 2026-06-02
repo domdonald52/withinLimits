@@ -144,12 +144,13 @@ window.Performance = (function(){
       d *= weight_mult;
     }
     // Slope correction — prefer 2D piecewise grid if present
-    let slope_factor, slope_oor = false, slope_oor_reason = null;
+    let slope_factor, slope_oor = false, slope_oor_reason = null, slope_oor_direction = null;
     if (data.slope_factor_takeoff && data.slope_factor_takeoff.grid){
-      const sr = computeSlopeFactor(data.slope_factor_takeoff, slope_pct, d);
+      const sr = computeSlopeFactor(data.slope_factor_takeoff, slope_pct, d, 'takeoff');
       slope_factor = sr.factor;
       slope_oor = sr.outOfRange;
       slope_oor_reason = sr.reason;
+      slope_oor_direction = sr.direction;
     } else {
       const slope_pct_per_pct = data.slope_factor_pct_per_pct_takeoff ?? data.slope_factor_pct_per_pct;
       slope_factor = 1 + (slope_pct * slope_pct_per_pct / 100);
@@ -166,6 +167,7 @@ window.Performance = (function(){
       slope_factor,
       slope_out_of_range: slope_oor,
       slope_oor_reason: slope_oor_reason,
+      slope_oor_direction: slope_oor_direction,
       wind_factor: wind_factor.value,
       wind_out_of_range: wind_factor.outOfRange,
       wind_oor_reason: wind_factor.reason,
@@ -189,12 +191,13 @@ window.Performance = (function(){
     const op_mult = mults_ld[operation] || 1.0;
     let d = d_ppd * op_mult;
     // Slope correction — prefer 2D piecewise grid if present
-    let slope_factor, slope_oor = false, slope_oor_reason = null;
+    let slope_factor, slope_oor = false, slope_oor_reason = null, slope_oor_direction = null;
     if (data.slope_factor_landing && data.slope_factor_landing.grid){
-      const sr = computeSlopeFactor(data.slope_factor_landing, slope_pct, d);
+      const sr = computeSlopeFactor(data.slope_factor_landing, slope_pct, d, 'landing');
       slope_factor = sr.factor;
       slope_oor = sr.outOfRange;
       slope_oor_reason = sr.reason;
+      slope_oor_direction = sr.direction;
     } else {
       const slope_pct_per_pct = data.slope_factor_pct_per_pct_landing ?? data.slope_factor_pct_per_pct;
       slope_factor = 1 - (slope_pct * slope_pct_per_pct / 100);
@@ -210,6 +213,7 @@ window.Performance = (function(){
       slope_factor,
       slope_out_of_range: slope_oor,
       slope_oor_reason: slope_oor_reason,
+      slope_oor_direction: slope_oor_direction,
       wind_factor: wind_factor.value,
       wind_out_of_range: wind_factor.outOfRange,
       wind_oor_reason: wind_factor.reason,
@@ -242,7 +246,7 @@ window.Performance = (function(){
     let factor, outOfRange = false, reason = null, direction = null;
     if (wind_kt >= 0){
       const capped = Math.min(wind_kt, wf.max_headwind_kt);
-      if (wind_kt > wf.max_headwind_kt){ outOfRange = true; reason = `Headwind ${wind_kt.toFixed(0)} kt exceeds chart limit ${wf.max_headwind_kt} kt`; direction = 'headwind'; }
+      if (wind_kt > wf.max_headwind_kt){ outOfRange = true; reason = `Headwind of ${wind_kt.toFixed(0)} kt is beyond chart range`; direction = 'headwind'; }
       // Prefer piecewise table if present; else scalar
       let pct;
       if (Array.isArray(wf.headwind_pct_per_kt_by_base) && wf.headwind_pct_per_kt_by_base.length){
@@ -253,7 +257,7 @@ window.Performance = (function(){
       factor = 1 - pct * capped;
     } else {
       const tail = Math.min(-wind_kt, wf.max_tailwind_kt);
-      if (-wind_kt > wf.max_tailwind_kt){ outOfRange = true; reason = `Tailwind ${(-wind_kt).toFixed(0)} kt exceeds chart limit ${wf.max_tailwind_kt} kt`; direction = 'tailwind'; }
+      if (-wind_kt > wf.max_tailwind_kt){ outOfRange = true; reason = `Tailwind of ${(-wind_kt).toFixed(0)} kt is beyond chart range`; direction = 'tailwind'; }
       let pct;
       if (Array.isArray(wf.tailwind_pct_per_kt_by_base) && wf.tailwind_pct_per_kt_by_base.length){
         pct = _interpByBase(wf.tailwind_pct_per_kt_by_base, base_m || 0);
@@ -306,19 +310,77 @@ window.Performance = (function(){
     return flo + (fhi - flo) * fb;
   }
 
-  function computeSlopeFactor(sf, slope_pct, base_m){
-    // sf is the slope correction object. Returns { factor, outOfRange, reason }.
-    if (!sf) return { factor: 1.0, outOfRange: false, reason: null };
+  function computeSlopeFactor(sf, slope_pct, base_m, phase){
+    // sf is the slope correction object. Returns { factor, outOfRange, reason, direction }.
+    // direction = 'advantage' if the OOR slope helps (e.g. downslope on T/O, upslope on LDG),
+    //           = 'penalty' if it hurts (e.g. upslope on T/O, downslope on LDG),
+    //           = null when not OOR.
+    // When OOR, factor is clamped to the nearest in-range cell so the engine still returns a number;
+    // for 'advantage' the floor distance is a safe upper bound (caller may show as caution + GO),
+    // for 'penalty' it underestimates the real distance (caller blocks with NO-GO).
+    if (!sf) return { factor: 1.0, outOfRange: false, reason: null, direction: null };
     if (Array.isArray(sf.grid) && sf.grid.length){
-      const f = _interpSlopeGrid(sf.grid, base_m || 0, slope_pct);
-      if (f == null){
-        return { factor: 1.0, outOfRange: true, reason: `Slope ${slope_pct.toFixed(2)}% at base ${(base_m||0).toFixed(0)} m is outside chart range` };
+      let f = _interpSlopeGrid(sf.grid, base_m || 0, slope_pct);
+      if (f != null) return { factor: f, outOfRange: false, reason: null, direction: null };
+      // OOR — find the nearest in-range slope value and use that as a clamp
+      const bases = [...sf.grid].sort((a,b) => a.base_m - b.base_m);
+      // pick base bracket
+      let blo, bhi;
+      if ((base_m || 0) <= bases[0].base_m){ blo = bhi = bases[0]; }
+      else if ((base_m || 0) >= bases[bases.length-1].base_m){ blo = bhi = bases[bases.length-1]; }
+      else {
+        for (let i = 0; i < bases.length-1; i++){
+          if (base_m >= bases[i].base_m && base_m <= bases[i+1].base_m){ blo = bases[i]; bhi = bases[i+1]; break; }
+        }
       }
-      return { factor: f, outOfRange: false, reason: null };
+      const clampSlope = (row, sp) => {
+        const pts = [...row.by_slope].sort((a,b) => a.slope_pct - b.slope_pct);
+        const lo = pts[0].slope_pct, hi = pts[pts.length-1].slope_pct;
+        const clamped = sp < lo ? lo : (sp > hi ? hi : sp);
+        // Re-interp at the clamped slope
+        if (clamped === lo) return pts[0].factor;
+        if (clamped === hi) return pts[pts.length-1].factor;
+        for (let i = 0; i < pts.length-1; i++){
+          if (clamped >= pts[i].slope_pct && clamped <= pts[i+1].slope_pct){
+            const ff = (clamped - pts[i].slope_pct) / (pts[i+1].slope_pct - pts[i].slope_pct);
+            return pts[i].factor + (pts[i+1].factor - pts[i].factor) * ff;
+          }
+        }
+        return null;
+      };
+      const flo = clampSlope(blo, slope_pct);
+      const fhi = (blo === bhi) ? flo : clampSlope(bhi, slope_pct);
+      const fb = (blo === bhi) ? 0 : (base_m - blo.base_m) / (bhi.base_m - blo.base_m);
+      f = flo + (fhi - flo) * fb;
+      // Direction: advantage if OOR slope helps the phase
+      // T/O: downslope (slope_pct < 0) helps. So OOR-too-far-down on T/O = advantage.
+      //      Upslope hurts. OOR-too-far-up on T/O = penalty.
+      // LDG: upslope (slope_pct > 0) helps. OOR-too-far-up on LDG = advantage.
+      //      Downslope hurts. OOR-too-far-down on LDG = penalty.
+      // What does "OOR" mean here? Find which direction it's out:
+      const row0 = bases[0]; // any row works to detect grid extents (chart edges similar across rows; conservative)
+      const lo = Math.min(...row0.by_slope.map(p => p.slope_pct));
+      const hi = Math.max(...row0.by_slope.map(p => p.slope_pct));
+      const oorHigh = slope_pct > hi;
+      const oorLow = slope_pct < lo;
+      let direction = null;
+      if (phase === 'takeoff'){
+        if (oorHigh) direction = 'penalty';      // more upslope than chart = longer T/O
+        else if (oorLow) direction = 'advantage';// more downslope than chart = shorter T/O
+      } else if (phase === 'landing'){
+        if (oorHigh) direction = 'advantage';    // more upslope = shorter LDG
+        else if (oorLow) direction = 'penalty';  // more downslope = longer LDG
+      }
+      return {
+        factor: f,
+        outOfRange: true,
+        reason: `Slope of ${slope_pct.toFixed(2)}% is beyond chart range`,
+        direction,
+      };
     }
     // Legacy scalar
     const pct_per_pct = sf.pct_per_pct || 0;
-    return { factor: 1 + (slope_pct * pct_per_pct / 100), outOfRange: false, reason: null };
+    return { factor: 1 + (slope_pct * pct_per_pct / 100), outOfRange: false, reason: null, direction: null };
   }
 
   // Bilinear interpolation/extrapolation over a PA × OAT grid.
@@ -473,13 +535,13 @@ window.Performance = (function(){
   function envelopeStatus(env, pa_ft, oat_c, elev_ft){
     if (!env) return [];
     const issues = [];
-    if (env.pa_max != null && pa_ft > env.pa_max) issues.push(`PA ${pa_ft.toFixed(0)}\u2032 above chart max ${env.pa_max}\u2032`);
-    if (env.pa_min != null && pa_ft < env.pa_min) issues.push(`PA ${pa_ft.toFixed(0)}\u2032 below chart min ${env.pa_min}\u2032`);
-    if (env.oat_max != null && oat_c > env.oat_max) issues.push(`OAT ${oat_c.toFixed(0)}°C above chart max ${env.oat_max}°C`);
-    if (env.oat_min != null && oat_c < env.oat_min) issues.push(`OAT ${oat_c.toFixed(0)}°C below chart min ${env.oat_min}°C`);
+    if (env.pa_max != null && pa_ft > env.pa_max) issues.push({ msg: `Pressure Alt of ${pa_ft.toFixed(0)}\u2032 is beyond chart range`, direction: 'unsafe' });
+    if (env.pa_min != null && pa_ft < env.pa_min) issues.push({ msg: `Pressure Alt of ${pa_ft.toFixed(0)}\u2032 is beyond chart range`, direction: 'safe' });
+    if (env.oat_max != null && oat_c > env.oat_max) issues.push({ msg: `OAT of ${oat_c.toFixed(0)}°C is beyond chart range`, direction: 'unsafe' });
+    if (env.oat_min != null && oat_c < env.oat_min) issues.push({ msg: `OAT of ${oat_c.toFixed(0)}°C is beyond chart range`, direction: 'safe' });
     if (elev_ft != null){
-      if (env.elev_max != null && elev_ft > env.elev_max) issues.push(`Elev ${elev_ft.toFixed(0)}\u2032 above chart max ${env.elev_max}\u2032`);
-      if (env.elev_min != null && elev_ft < env.elev_min) issues.push(`Elev ${elev_ft.toFixed(0)}\u2032 below chart min ${env.elev_min}\u2032`);
+      if (env.elev_max != null && elev_ft > env.elev_max) issues.push({ msg: `Elev of ${elev_ft.toFixed(0)}\u2032 is beyond chart range`, direction: 'unsafe' });
+      if (env.elev_min != null && elev_ft < env.elev_min) issues.push({ msg: `Elev of ${elev_ft.toFixed(0)}\u2032 is beyond chart range`, direction: 'safe' });
     }
     return issues;
   }

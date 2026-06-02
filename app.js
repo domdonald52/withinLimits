@@ -149,7 +149,7 @@ const App = (function(){
     perf_method: 'pchart',
   };
   let recentRunways = [];
-  const APP_VERSION = 'wb-v100';
+  const APP_VERSION = 'wb-v104';
   let runways = [];
   let selectedToRunwayId = null;
   let selectedLdRunwayId = null;
@@ -1775,22 +1775,37 @@ const App = (function(){
       const env = activeMethod === 'pchart' ? P.pchartEnvelope(pdata) : (activeMethod === 'afm' ? P.afmEnvelope(adata) : null);
       const toEnvIssuesEarly = P.envelopeStatus(env, paTo, oatTo, null);
       const ldEnvIssuesEarly = P.envelopeStatus(env, paLd, oatLd, rLd.elev);
-      if (toEnvIssuesEarly.length){ to_result.wind_out_of_range = true; to_result.wind_oor_reason = `T/O outside chart range: ${toEnvIssuesEarly.join('; ')}`; }
-      if (ldEnvIssuesEarly.length){ ld_result.wind_out_of_range = true; ld_result.wind_oor_reason = `LDG outside chart range: ${ldEnvIssuesEarly.join('; ')}`; }
-      // Slope OOR (e.g. +3% slope at base 1000 m off-chart) — surface via same OOR mechanism. NO-GO.
+      // Envelope OOR: 'safe' direction (PA below grid, OAT below grid, elev below grid) means the chart-edge
+      // value is a safe upper bound — show as amber caution but allow GO if floor ≤ TORA/LDA.
+      // 'unsafe' direction (above grid) means the actual distance could be longer than shown — NO-GO.
+      const _tagOOR = (result, issues, sideLabel) => {
+        if (!issues.length) return;
+        const unsafe = issues.filter(i => i.direction === 'unsafe');
+        const safe = issues.filter(i => i.direction === 'safe');
+        result.wind_out_of_range = true;
+        const allMsgs = issues.map(i => i.msg).join('; ');
+        result.wind_oor_reason = `${sideLabel} outside chart range: ${allMsgs}`;
+        // If any unsafe issue, block. Otherwise mark as 'headwind' (safe) so the existing logic shows amber.
+        result.wind_oor_direction = unsafe.length ? null : 'headwind';
+      };
+      _tagOOR(to_result, toEnvIssuesEarly, 'T/O');
+      _tagOOR(ld_result, ldEnvIssuesEarly, 'LDG');
+      // Slope OOR — direction-aware. 'advantage' direction (downslope on T/O, upslope on LDG) means
+      // the chart-edge value is a safe upper bound — show as amber caution but allow GO.
+      // 'penalty' direction (upslope on T/O, downslope on LDG) means the actual distance could be
+      // longer than the clamped value — NO-GO.
       if (to_result.slope_out_of_range){
         to_result.wind_out_of_range = true;
         to_result.wind_oor_reason = (to_result.wind_oor_reason ? to_result.wind_oor_reason + '; ' : '') + to_result.slope_oor_reason;
-        to_result.wind_oor_direction = null; // slope OOR is unconditional blocking
+        to_result.wind_oor_direction = to_result.slope_oor_direction === 'advantage' ? 'headwind' : null;
       }
       if (ld_result.slope_out_of_range){
         ld_result.wind_out_of_range = true;
         ld_result.wind_oor_reason = (ld_result.wind_oor_reason ? ld_result.wind_oor_reason + '; ' : '') + ld_result.slope_oor_reason;
-        ld_result.wind_oor_direction = null;
+        ld_result.wind_oor_direction = ld_result.slope_oor_direction === 'advantage' ? 'headwind' : null;
       }
-      // Headwind OOR is conservative (chart underestimates the benefit), so the floor distance
-      // is a safe upper bound — still GO if it fits TORA. Tailwind OOR underestimates the
-      // penalty, so NO-GO. Envelope OOR (PA/elev/OAT) and slope OOR leave direction null and are NO-GO too.
+      // OOR blocking logic: only 'unsafe'-direction (null) blocks GO. Safe-direction OOR (headwind, PA/OAT/elev
+      // below chart floor) still allows GO if the floor distance fits.
       const toOorBlocks = !!to_result.wind_out_of_range && to_result.wind_oor_direction !== 'headwind';
       const ldOorBlocks = !!ld_result.wind_out_of_range && ld_result.wind_oor_direction !== 'headwind';
       const toOK = rTo.tora > 0 && to_result.distance <= rTo.tora && !toOorBlocks;
@@ -1823,8 +1838,8 @@ const App = (function(){
       // Envelope (chart range) warnings
       const toEnvIssues = toEnvIssuesEarly;
       const ldEnvIssues = ldEnvIssuesEarly;
-      if (toEnvIssues.length) windWarning += `<div class="banner warn" style="margin:0 0 6px;font-size:12px">⚠ T/O outside chart range: ${toEnvIssues.join('; ')}. Result is extrapolated \u2014 treat with caution.</div>`;
-      if (ldEnvIssues.length) windWarning += `<div class="banner warn" style="margin:0 0 6px;font-size:12px">⚠ LDG outside chart range: ${ldEnvIssues.join('; ')}. Result is extrapolated \u2014 treat with caution.</div>`;
+      if (toEnvIssues.length) windWarning += `<div class="banner warn" style="margin:0 0 6px;font-size:12px">\u26a0 T/O outside chart range: ${toEnvIssues.map(i => i.msg).join('; ')}. Result is extrapolated \u2014 treat with caution.</div>`;
+      if (ldEnvIssues.length) windWarning += `<div class="banner warn" style="margin:0 0 6px;font-size:12px">\u26a0 LDG outside chart range: ${ldEnvIssues.map(i => i.msg).join('; ')}. Result is extrapolated \u2014 treat with caution.</div>`;
 
       // Chart notes (T/O and LDG) sourced from the active method's data
       let chartNotes = '';
@@ -1898,9 +1913,9 @@ const App = (function(){
       const oorMarker = (res) => {
         if (!res.wind_out_of_range) return '';
         if (res.wind_oor_direction === 'headwind'){
-          return `<span style="color:#d97706;font-weight:600">\u26a0 ${res.wind_oor_reason} \u2014 distance shown is a safe upper bound (chart can't credit the extra headwind)</span>`;
+          return `<span style="color:#d97706;font-weight:600">\u26a0 ${res.wind_oor_reason}. Distance shown is conservative.</span>`;
         }
-        return `<span style="color:#dc2626;font-weight:600">\u2717 ${res.wind_oor_reason}</span>`;
+        return `<span style="color:#dc2626;font-weight:600">\u2717 ${res.wind_oor_reason}. Cannot estimate safely.</span>`;
       };
       const toCasoFinal = (to_result.wind_out_of_range ? `${oorMarker(to_result)}${toCaso ? ' \u00b7 ' + toCaso : ''}` : toCaso);
       const ldCasoFinal = (ld_result.wind_out_of_range ? `${oorMarker(ld_result)}${ldCaso ? ' \u00b7 ' + ldCaso : ''}` : ldCaso);
