@@ -149,7 +149,7 @@ const App = (function(){
     perf_method: 'pchart',
   };
   let recentRunways = [];
-  const APP_VERSION = 'wb-v106';
+  const APP_VERSION = 'wb-v107';
   let runways = [];
   let selectedToRunwayId = null;
   let selectedLdRunwayId = null;
@@ -1778,35 +1778,47 @@ const App = (function(){
       const env = activeMethod === 'pchart' ? P.pchartEnvelope(pdata) : (activeMethod === 'afm' ? P.afmEnvelope(adata) : null);
       const toEnvIssuesEarly = P.envelopeStatus(env, paTo, oatTo, null);
       const ldEnvIssuesEarly = P.envelopeStatus(env, paLd, oatLd, rLd.elev);
-      // Envelope OOR: 'safe' direction (PA below grid, OAT below grid, elev below grid) means the chart-edge
-      // value is a safe upper bound — show as amber caution but allow GO if floor ≤ TORA/LDA.
-      // 'unsafe' direction (above grid) means the actual distance could be longer than shown — NO-GO.
+      // Envelope OOR: 'safe' direction means chart-edge value is a safe upper bound — caution + GO if fits.
+      // 'unsafe' direction means actual could be longer than shown — NO-GO.
+      // Direction precedence (worst wins): tailwind/null/penalty > 'headwind' > undefined.
+      // Once a blocking direction is set by anything (wind, env, slope), it must NOT be overwritten.
       const _tagOOR = (result, issues, sideLabel) => {
         if (!issues.length) return;
         const unsafe = issues.filter(i => i.direction === 'unsafe');
-        const safe = issues.filter(i => i.direction === 'safe');
-        result.wind_out_of_range = true;
         const allMsgs = issues.map(i => i.msg).join('; ');
-        result.wind_oor_reason = `${sideLabel} ${allMsgs}`;
-        // If any unsafe issue, block. Otherwise mark as 'headwind' (safe) so the existing logic shows amber.
-        result.wind_oor_direction = unsafe.length ? null : 'headwind';
+        const newMsg = `${sideLabel} ${allMsgs}`;
+        result.wind_oor_reason = result.wind_oor_reason ? `${result.wind_oor_reason}; ${newMsg}` : newMsg;
+        result.wind_out_of_range = true;
+        // Set direction worst-wins. If unsafe issue, force blocking (null). Otherwise only set
+        // 'headwind' (advantage) if no blocking direction is already set.
+        if (unsafe.length){
+          result.wind_oor_direction = null;
+        } else if (result.wind_oor_direction === undefined || result.wind_oor_direction === null){
+          // null here means "not yet set" because wind didn't OOR; tagOOR is establishing the first OOR
+          if (!result.wind_out_of_range_blocked) result.wind_oor_direction = 'headwind';
+        }
+        // If wind already set 'tailwind', that's blocking — keep it (don't overwrite).
       };
+      // Wind OOR was set by computeWindFactor inside pchart*Distance. If it's blocking (tailwind),
+      // record that so env/slope don't downgrade.
+      if (to_result.wind_out_of_range && to_result.wind_oor_direction === 'tailwind') to_result.wind_out_of_range_blocked = true;
+      if (ld_result.wind_out_of_range && ld_result.wind_oor_direction === 'tailwind') ld_result.wind_out_of_range_blocked = true;
       _tagOOR(to_result, toEnvIssuesEarly, 'T/O');
       _tagOOR(ld_result, ldEnvIssuesEarly, 'LDG');
-      // Slope OOR — direction-aware. 'advantage' direction (downslope on T/O, upslope on LDG) means
-      // the chart-edge value is a safe upper bound — show as amber caution but allow GO.
-      // 'penalty' direction (upslope on T/O, downslope on LDG) means the actual distance could be
-      // longer than the clamped value — NO-GO.
-      if (to_result.slope_out_of_range){
-        to_result.wind_out_of_range = true;
-        to_result.wind_oor_reason = (to_result.wind_oor_reason ? to_result.wind_oor_reason + '; ' : '') + to_result.slope_oor_reason;
-        to_result.wind_oor_direction = to_result.slope_oor_direction === 'advantage' ? 'headwind' : null;
-      }
-      if (ld_result.slope_out_of_range){
-        ld_result.wind_out_of_range = true;
-        ld_result.wind_oor_reason = (ld_result.wind_oor_reason ? ld_result.wind_oor_reason + '; ' : '') + ld_result.slope_oor_reason;
-        ld_result.wind_oor_direction = ld_result.slope_oor_direction === 'advantage' ? 'headwind' : null;
-      }
+      // Slope OOR — direction-aware. 'advantage' = caution + GO if fits. 'penalty' = NO-GO.
+      const _addSlopeOOR = (result) => {
+        if (!result.slope_out_of_range) return;
+        result.wind_out_of_range = true;
+        result.wind_oor_reason = (result.wind_oor_reason ? result.wind_oor_reason + '; ' : '') + result.slope_oor_reason;
+        if (result.slope_oor_direction === 'penalty'){
+          result.wind_oor_direction = null;
+          result.wind_out_of_range_blocked = true;
+        } else if (!result.wind_out_of_range_blocked && (result.wind_oor_direction === undefined || result.wind_oor_direction === null)){
+          result.wind_oor_direction = 'headwind';
+        }
+      };
+      _addSlopeOOR(to_result);
+      _addSlopeOOR(ld_result);
       // OOR blocking logic: only 'unsafe'-direction (null) blocks GO. Safe-direction OOR (headwind, PA/OAT/elev
       // below chart floor) still allows GO if the floor distance fits.
       const toOorBlocks = !!to_result.wind_out_of_range && to_result.wind_oor_direction !== 'headwind';
