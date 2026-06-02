@@ -1,4 +1,4 @@
-const CACHE = 'wb-v104';
+const CACHE = 'wb-v106';
 const ASSETS = [
   './',
   './index.html',

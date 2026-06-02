@@ -149,7 +149,7 @@ const App = (function(){
     perf_method: 'pchart',
   };
   let recentRunways = [];
-  const APP_VERSION = 'wb-v104';
+  const APP_VERSION = 'wb-v106';
   let runways = [];
   let selectedToRunwayId = null;
   let selectedLdRunwayId = null;
@@ -1727,7 +1727,7 @@ const App = (function(){
       if (opCard2) opCard2.classList.add('hidden');
       return;
     }
-      const stat = (label, distance, available, ok, sub, altDistance, weightNote, casoNote, xwNote, oor) => {
+      const stat = (label, distance, available, ok, sub, altDistance, weightNote, casoNote, xwNote, oor, oorDirection) => {
         const pctOfLimit = (!oor && available > 0) ? (distance / available) * 100 : null;
         const hi = Math.round(distance * 1.1);
         const lo = Math.round(distance * 0.9);
@@ -1745,7 +1745,10 @@ const App = (function(){
         else goChip = `<span style="font-size:12px;font-weight:700;color:#16a34a">\u2713 GO</span>`;
         const overshoot = (!oor && !ok && available > 0) ? `<div class="s" style="color:#dc2626;font-size:11px">Exceeds ${sub} by ${(distance - available).toFixed(0)} m</div>` : '';
         const tolerance = !oor ? `<span style="font-size:11px;color:var(--muted)">(${lo}\u2013${hi})</span>` : '';
-        const distancePrefix = oor ? '\u2265' : '';
+        // For OOR in the favourable direction (e.g. PA below chart, headwind > chart), the engine's
+        // result is an upper bound on the actual requirement. Use ≤. For unfavourable OOR (tailwind,
+        // PA above chart), the result is a lower bound (chart-edge underestimates). Use ≥.
+        const distancePrefix = oor ? (oorDirection === 'headwind' ? '\u2264' : '\u2265') : '';
         const distanceLabel = oor ? '<span style="font-size:11px;color:var(--muted);margin-left:4px">(chart floor)</span>' : '';
         let altRow = '';
         if (!oor && altDistance != null){
@@ -1784,7 +1787,7 @@ const App = (function(){
         const safe = issues.filter(i => i.direction === 'safe');
         result.wind_out_of_range = true;
         const allMsgs = issues.map(i => i.msg).join('; ');
-        result.wind_oor_reason = `${sideLabel} outside chart range: ${allMsgs}`;
+        result.wind_oor_reason = `${sideLabel} ${allMsgs}`;
         // If any unsafe issue, block. Otherwise mark as 'headwind' (safe) so the existing logic shows amber.
         result.wind_oor_direction = unsafe.length ? null : 'headwind';
       };
@@ -1831,15 +1834,8 @@ const App = (function(){
       }
 
       let windWarning = '';
-      if (activeMethod === 'pchart' && pdata.wind_factor){
-        if (toWind.headwind < -pdata.wind_factor.max_tailwind_kt) windWarning += `<div class="banner warn" style="margin:0 0 6px;font-size:12px">⚠ T/O tailwind ${(-toWind.headwind).toFixed(1)} kt exceeds chart limit ${pdata.wind_factor.max_tailwind_kt} kt</div>`;
-        if (ldWind.headwind < -pdata.wind_factor.max_tailwind_kt) windWarning += `<div class="banner warn" style="margin:0 0 6px;font-size:12px">⚠ LDG tailwind ${(-ldWind.headwind).toFixed(1)} kt exceeds chart limit ${pdata.wind_factor.max_tailwind_kt} kt</div>`;
-      }
-      // Envelope (chart range) warnings
-      const toEnvIssues = toEnvIssuesEarly;
-      const ldEnvIssues = ldEnvIssuesEarly;
-      if (toEnvIssues.length) windWarning += `<div class="banner warn" style="margin:0 0 6px;font-size:12px">\u26a0 T/O outside chart range: ${toEnvIssues.map(i => i.msg).join('; ')}. Result is extrapolated \u2014 treat with caution.</div>`;
-      if (ldEnvIssues.length) windWarning += `<div class="banner warn" style="margin:0 0 6px;font-size:12px">\u26a0 LDG outside chart range: ${ldEnvIssues.map(i => i.msg).join('; ')}. Result is extrapolated \u2014 treat with caution.</div>`;
+      // Per-result OOR messages (tailwind, envelope, slope) appear inline beneath each T/O and LDG
+      // stat chip via toCasoFinal/ldCasoFinal. No need for duplicate top-banner warnings here.
 
       // Chart notes (T/O and LDG) sourced from the active method's data
       let chartNotes = '';
@@ -1913,7 +1909,8 @@ const App = (function(){
       const oorMarker = (res) => {
         if (!res.wind_out_of_range) return '';
         if (res.wind_oor_direction === 'headwind'){
-          return `<span style="color:#d97706;font-weight:600">\u26a0 ${res.wind_oor_reason}. Distance shown is conservative.</span>`;
+          // Favourable-direction OOR is informational, not a warning — softer blue + info icon
+          return `<span style="color:var(--accent);font-weight:600">\u24d8 ${res.wind_oor_reason}. Distance shown is conservative.</span>`;
         }
         return `<span style="color:#dc2626;font-weight:600">\u2717 ${res.wind_oor_reason}. Cannot estimate safely.</span>`;
       };
@@ -1928,8 +1925,8 @@ const App = (function(){
         chartNotes +
         windWarning +
         `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">` +
-        stat(`T/O to 50\u2032 ${rTo.ident ? '\u2014 ' + rTo.ident : ''}`, to_result.distance, rTo.tora, toOK, 'TORA', alt_to, toWtNote, toCasoFinal, toXwNote, !!to_result.wind_out_of_range) +
-        stat(`LDG from 50\u2032 ${rLd.ident ? '\u2014 ' + rLd.ident : ''}`, ld_result.distance, rLd.lda, ldOK, 'LDA', alt_ld, ldWtNote, ldCasoFinal, ldXwNote, !!ld_result.wind_out_of_range) +
+        stat(`T/O to 50\u2032 ${rTo.ident ? '\u2014 ' + rTo.ident : ''}`, to_result.distance, rTo.tora, toOK, 'TORA', alt_to, toWtNote, toCasoFinal, toXwNote, !!to_result.wind_out_of_range, to_result.wind_oor_direction) +
+        stat(`LDG from 50\u2032 ${rLd.ident ? '\u2014 ' + rLd.ident : ''}`, ld_result.distance, rLd.lda, ldOK, 'LDA', alt_ld, ldWtNote, ldCasoFinal, ldXwNote, !!ld_result.wind_out_of_range, ld_result.wind_oor_direction) +
         `</div>`;
 
       const fmt2 = x => x.toFixed(3);
